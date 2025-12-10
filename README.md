@@ -1,17 +1,17 @@
 # Repository Structure
-master/
-├── data/
-├── src/
-│   ├── models/
-│   ├── lightning_modules/
-│   ├── data_modules/
-│   ├── utils/
-│   ├── train.py
-│   ├── evaluate.py
-├── configs/
-│   ├── config.yaml
-│   ├── model/
-│   ├── data/
-│   ├── experiment/
-├── logs/
-├── checkpoints/
+master/ <br/>
+├── data/ <br/>
+├── src/ <br/>
+│   ├── models/ <br/>
+│   ├── lightning_modules/ <br/>
+│   ├── data_modules/ <br/>
+│   ├── utils/ <br/>
+│   ├── train.py <br/>
+│   ├── evaluate.py <br/>
+├── configs/ <br/>
+│   ├── config.yaml <br/>
+│   ├── model/ <br/>
+│   ├── data/ <br/>
+│   ├── experiment/ <br/>
+├── logs/ <br/>
+├── checkpoints/ <br/>
