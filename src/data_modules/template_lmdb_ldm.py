@@ -1,4 +1,4 @@
-# Source: https://lightning.ai/docs/pytorch/stable/data/datamodule.html
+# LightningDataModule Docs: https://lightning.ai/docs/pytorch/stable/data/datamodule.html
 
 from typing import List, Literal, Optional
 
@@ -82,7 +82,7 @@ class TemplateLMDB(torch.utils.data.Dataset):
         label = self.metadata[self.metadata['patch_id'] == patch_id]['labels']
         assert len(label) == 1
         label = label.values[0]
-        label = _stringlist_to_tensor(label)
+        label = #TODO convert to tensor if needed
         return patch, label
 
 #TODO check if usefull
@@ -97,7 +97,6 @@ class TemplateDataModule(L.LightningDataModule):
             bandorder: List,
             lmdb_path: str = None,
             metadata_parquet_path: str = None,
-            #TODO check mean and dev
             train_transform = None, # use None as default to avoid mutable complex defaults that are shared across multiple instances and ensure compatibility with LightningCLI/YAML overrides
             val_test_transform = None,
     ):
@@ -105,9 +104,12 @@ class TemplateDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.bandorder = bandorder
+        self.lmdb_path = lmdb_path
+        self.metadata_parquet_path = metadata_parquet_path
 
-        
-         # Assign defaults inside __init__ to avoid shared state
+        self.dataset = None
+
+        # Assign defaults inside __init__ to avoid shared state
         self.train_transform = train_transform or v2.Compose([
             v2.ToImage(), # wraps data in tv_tensors.Image object
             v2.ToDtype(torch.float32, scale=True), #  scale=True for [0,1] scaling
@@ -136,7 +138,6 @@ class TemplateDataModule(L.LightningDataModule):
 
     def setup(self, stage: str):
         if stage == 'fit' or stage is None:
-            # First create dataset without transforms to compute statistics so that we don't have to laod the dataset twice
             self.train_dataset = self.dataset(
                 split='train',
                 transform=None  #TODO: Check: No transforms for statistics computation
