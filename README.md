@@ -17,4 +17,4 @@ master/ <br/>
     ├── models/ <br/>
     ├── utils/ <br/>
     ├── train.py <br/>
-    └──evaluate.py <br/>
+    └── evaluate.py <br/>
