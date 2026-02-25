@@ -188,6 +188,20 @@ cython_debug/
 #  you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 
+# Project trash (archived code)
+.trash/
+
+# Training outputs (checkpoints, logs)
+outputs/
+
+# Downloaded data and model weights
+data/
+
+# Unsloth compiled module cache
+unsloth_compiled_cache/
+
+thesis/
+
 # Ruff stuff:
 .ruff_cache/
 
