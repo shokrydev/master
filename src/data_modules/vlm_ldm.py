@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Literal, Optional
 
 import lightning as L
+import numpy as np
 import pandas as pd
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
@@ -53,6 +54,7 @@ class VLMDataset(Dataset):
         multi_caption: bool = False,
         lat_column: Optional[str] = None,
         lon_column: Optional[str] = None,
+        coordinate_perturbation: Optional[Literal["shuffled", "antipodal"]] = None,
         metadata: Optional[pd.DataFrame] = None,
     ):
         """
@@ -70,6 +72,9 @@ class VLMDataset(Dataset):
             multi_caption: If True, caption_column contains a list; pick random per access
             lat_column: Column name for latitude (enables geo features)
             lon_column: Column name for longitude (enables geo features)
+            coordinate_perturbation: Perturb coordinates for counterfactual validation.
+                "shuffled": permute lat/lon across samples (fixed seed 42).
+                "antipodal": negate lat, add 180 to lon (wrapping to [-180, 180]).
             metadata: Pre-loaded DataFrame (skips reading metadata_path if provided)
         """
         self.image_dir = Path(image_dir)
@@ -95,6 +100,18 @@ class VLMDataset(Dataset):
 
         if split is not None:
             self.metadata = self.metadata[self.metadata['split'] == split].reset_index(drop=True)
+
+        # Apply coordinate perturbation (counterfactual validation)
+        if coordinate_perturbation and lat_column and lon_column:
+            if coordinate_perturbation == "shuffled":
+                rng = np.random.RandomState(42)
+                perm = rng.permutation(len(self.metadata))
+                self.metadata[lat_column] = self.metadata[lat_column].values[perm]
+                self.metadata[lon_column] = self.metadata[lon_column].values[perm]
+            elif coordinate_perturbation == "antipodal":
+                self.metadata[lat_column] = -self.metadata[lat_column]
+                lon = self.metadata[lon_column].values
+                self.metadata[lon_column] = np.where(lon <= 0, lon + 180, lon - 180)
 
         self.keys = self.metadata[id_column].tolist()
         self.keys.sort()  # Ensure reproducibility
@@ -252,6 +269,7 @@ class VLMDataModule(L.LightningDataModule):
         multi_caption: bool = False,
         lat_column: Optional[str] = None,
         lon_column: Optional[str] = None,
+        coordinate_perturbation: Optional[Literal["shuffled", "antipodal"]] = None,
     ):
         """
         Initialize VLM DataModule.
@@ -271,6 +289,7 @@ class VLMDataModule(L.LightningDataModule):
             multi_caption: If True, caption_column is a list; pick random per access
             lat_column: Column name for latitude (enables geo features)
             lon_column: Column name for longitude (enables geo features)
+            coordinate_perturbation: Perturb coordinates for counterfactual validation
         """
         super().__init__()
         self.save_hyperparameters()
@@ -289,6 +308,7 @@ class VLMDataModule(L.LightningDataModule):
         self.multi_caption = multi_caption
         self.lat_column = lat_column
         self.lon_column = lon_column
+        self.coordinate_perturbation = coordinate_perturbation
 
         # Collate function (set by lightning module after model init)
         self._collate_fn: Optional[Callable] = None
@@ -343,6 +363,7 @@ class VLMDataModule(L.LightningDataModule):
             'multi_caption': self.multi_caption,
             'lat_column': self.lat_column,
             'lon_column': self.lon_column,
+            'coordinate_perturbation': self.coordinate_perturbation,
         }
 
         if stage == 'fit' or stage is None:
