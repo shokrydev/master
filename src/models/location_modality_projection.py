@@ -8,7 +8,7 @@ class LocationModalityProjection(nn.Module):
     """Projects SatCLIP location embeddings into the VLM hidden space.
 
     Architecture: Linear → GELU → Linear, producing one or more "location tokens"
-    that get prepended to the input sequence.
+    that are inserted before the visual block in the decoder sequence.
 
     Args:
         satclip_dim: SatCLIP embedding dimension (256 for all variants)
