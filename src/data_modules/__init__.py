@@ -1,16 +1,17 @@
-# VLM (Vision-Language Model) Data Modules
-from src.data_modules.vlm_ldm import (
-    VLMDataset,
-    VLMDataModule,
-)
-
-# Collators
-from src.data_modules.collators import GeoAwareCollator
+from importlib import import_module
 
 __all__ = [
-    # File-based VLM
-    "VLMDataset",
-    "VLMDataModule",
-    # Collators
+    "GAIADataset",
+    "GAIADataModule",
     "GeoAwareCollator",
 ]
+
+
+def __getattr__(name: str):
+    if name in {"GAIADataset", "GAIADataModule"}:
+        module = import_module("src.data_modules.gaia_datamodule")
+        return getattr(module, name)
+    if name == "GeoAwareCollator":
+        module = import_module("src.data_modules.geo_aware_collator")
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
