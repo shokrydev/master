@@ -1,15 +1,10 @@
-# Metrics for Single-Label and Multi-Label Classification Tasks
+# Metrics for multi-label classification tasks
 
-from typing import Literal, Optional
+from typing import Literal
 
 import torch
 from torchmetrics import Metric
 from torchmetrics.classification import (
-    MulticlassAccuracy,
-    MulticlassF1Score,
-    MulticlassPrecision,
-    MulticlassRecall,
-    MultilabelAccuracy,
     MultilabelF1Score,
     MultilabelHammingDistance,
     MultilabelPrecision,
@@ -17,82 +12,8 @@ from torchmetrics.classification import (
 )
 
 
-class SingleLabelClassificationMetrics(Metric):
-    """
-    Collection of metrics for single-label (multiclass) classification.
-
-    Computes:
-    - Accuracy
-    - Precision (macro, micro, weighted)
-    - Recall (macro, micro, weighted)
-    - F1 Score (macro, micro, weighted)
-    """
-
-    is_differentiable = False
-    higher_is_better = True
-    full_state_update = False
-
-    def __init__(
-        self,
-        num_classes: int,
-        average: Literal["micro", "macro", "weighted"] = "macro",
-        top_k: int = 1,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self.num_classes = num_classes
-        self.average = average
-        self.top_k = top_k
-
-        self.accuracy = MulticlassAccuracy(
-            num_classes=num_classes,
-            top_k=top_k,
-            average="micro",
-        )
-        self.precision = MulticlassPrecision(
-            num_classes=num_classes,
-            average=average,
-        )
-        self.recall = MulticlassRecall(
-            num_classes=num_classes,
-            average=average,
-        )
-        self.f1 = MulticlassF1Score(
-            num_classes=num_classes,
-            average=average,
-        )
-
-    def update(self, preds: torch.Tensor, target: torch.Tensor):
-        """
-        Update all metrics.
-
-        Args:
-            preds: Predictions, shape (N,) for class indices or (N, C) for logits
-            target: Ground truth labels, shape (N,)
-        """
-        self.accuracy.update(preds, target)
-        self.precision.update(preds, target)
-        self.recall.update(preds, target)
-        self.f1.update(preds, target)
-
-    def compute(self) -> dict:
-        return {
-            "accuracy": self.accuracy.compute(),
-            "precision": self.precision.compute(),
-            "recall": self.recall.compute(),
-            "f1": self.f1.compute(),
-        }
-
-    def reset(self):
-        self.accuracy.reset()
-        self.precision.reset()
-        self.recall.reset()
-        self.f1.reset()
-
-
 class MultiLabelClassificationMetrics(Metric):
-    """
-    Collection of metrics for multi-label classification.
+    """Collection of metrics for multi-label classification.
 
     Computes:
     - Subset Accuracy (exact match)
@@ -141,8 +62,7 @@ class MultiLabelClassificationMetrics(Metric):
         )
 
     def update(self, preds: torch.Tensor, target: torch.Tensor):
-        """
-        Update all metrics.
+        """Update all metrics.
 
         Args:
             preds: Predictions, shape (N, L) probabilities or binary
@@ -183,50 +103,8 @@ class MultiLabelClassificationMetrics(Metric):
         self.f1.reset()
 
 
-class TopKAccuracy(Metric):
-    """
-    Top-K accuracy for classification tasks.
-
-    Checks if the ground truth label is within the top-k predictions.
-    """
-
-    is_differentiable = False
-    higher_is_better = True
-    full_state_update = False
-
-    def __init__(self, k: int = 5, **kwargs):
-        super().__init__(**kwargs)
-        self.k = k
-
-        self.add_state("correct", default=torch.tensor(0), dist_reduce_fx="sum")
-        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
-
-    def update(self, preds: torch.Tensor, target: torch.Tensor):
-        """
-        Update metric.
-
-        Args:
-            preds: Prediction logits or probabilities, shape (N, C)
-            target: Ground truth labels, shape (N,)
-        """
-        top_k_preds = preds.topk(min(self.k, preds.size(-1)), dim=-1).indices
-        correct = (top_k_preds == target.unsqueeze(-1)).any(dim=-1)
-        self.correct += correct.sum()
-        self.total += target.numel()
-
-    def compute(self) -> torch.Tensor:
-        """Compute top-k accuracy."""
-        if self.total == 0:
-            return torch.tensor(0.0, device=self.correct.device)
-        return self.correct.float() / self.total
-
-
 class MeanAveragePrecision(Metric):
-    """
-    Mean Average Precision (mAP) for multi-label classification.
-
-    Computes the average precision for each label and then averages.
-    """
+    """Mean Average Precision (mAP) for multi-label classification."""
 
     is_differentiable = False
     higher_is_better = True
@@ -235,23 +113,16 @@ class MeanAveragePrecision(Metric):
     def __init__(self, num_labels: int, **kwargs):
         super().__init__(**kwargs)
         self.num_labels = num_labels
-
         self.add_state("preds_list", default=[], dist_reduce_fx="cat")
         self.add_state("target_list", default=[], dist_reduce_fx="cat")
 
     def update(self, preds: torch.Tensor, target: torch.Tensor):
-        """
-        Update metric.
-
-        Args:
-            preds: Prediction probabilities, shape (N, L)
-            target: Ground truth labels, shape (N, L) binary
-        """
+        """Accumulate prediction probabilities and binary targets."""
         self.preds_list.append(preds)
         self.target_list.append(target)
 
     def compute(self) -> torch.Tensor:
-        """Compute mean average precision."""
+        """Compute mean average precision across labels."""
         if len(self.preds_list) == 0:
             return torch.tensor(0.0)
 
