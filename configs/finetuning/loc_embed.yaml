@@ -1,0 +1,8 @@
+# Override for the loc_embed condition.
+
+model:
+  init_args:
+    loc_mode: encoder
+    satclip_checkpoint: ${paths.satclip_checkpoint_path}
+    satclip_dim: 256
+    num_location_tokens: 1

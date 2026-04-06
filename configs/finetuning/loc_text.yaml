@@ -1,0 +1,9 @@
+# Override for the loc_text condition.
+
+model:
+  init_args:
+    loc_mode: text
+
+data:
+  init_args:
+    user_prompt: "Describe this remote sensing image in detail. The capture location is latitude {lat:.4f}, longitude {lon:.4f}."

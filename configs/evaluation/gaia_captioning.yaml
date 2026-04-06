@@ -1,0 +1,19 @@
+# Override for GAIA captioning evaluation.
+# Compose with configs/finetuning/gaia_finetuning_shared.yaml and, if needed,
+# one finetuning condition override such as loc_text.yaml or loc_embed.yaml.
+
+paths:
+  output_dir: ${oc.env:EVAL_OUTPUT_DIR,./outputs/eval}
+
+trainer:
+  default_root_dir: ${paths.output_dir}
+  enable_checkpointing: false
+
+model:
+  init_args:
+    val_generate_batches: -1
+    test_predictions_path: null
+
+data:
+  init_args:
+    coordinate_perturbation: null
