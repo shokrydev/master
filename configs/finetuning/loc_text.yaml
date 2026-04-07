@@ -2,7 +2,7 @@
 
 model:
   init_args:
-    loc_mode: text
+    loc_mode: loc_text
 
 data:
   init_args:

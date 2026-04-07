@@ -83,7 +83,7 @@ model:
     max_new_tokens: 256
     val_generate_batches: 0
 
-    loc_mode: none
+    loc_mode: no_loc
 
 data:
   class_path: src.data_modules.GAIADataModule

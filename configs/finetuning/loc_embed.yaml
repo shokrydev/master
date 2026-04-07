@@ -2,7 +2,7 @@
 
 model:
   init_args:
-    loc_mode: encoder
+    loc_mode: loc_embed
     satclip_checkpoint: ${paths.satclip_checkpoint_path}
     satclip_dim: 256
     num_location_tokens: 1
