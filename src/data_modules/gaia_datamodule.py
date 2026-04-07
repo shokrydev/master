@@ -1,62 +1,96 @@
 # LightningDataModule for GAIA captioning with optional geolocation conditioning
 
-import os
+import json
 import random
 from pathlib import Path
-from typing import Any, Callable, Dict, Literal, Optional
+from typing import Callable, Iterator, Literal, Optional
 
 import lightning as L
 import numpy as np
 import pandas as pd
-from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+import torch
+import webdataset as wds
+from PIL import Image, ImageFile
+from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 
-class GAIADataset(Dataset):
-    """Dataset for GAIA remote-sensing captioning.
+SPLIT_LAYOUT: dict[str, tuple[str, str]] = {
+    "train": ("train", "train_data.json"),
+    "validation": ("val", "val_data.json"),
+    "test": ("test", "test_data.json"),
+}
 
-    Returns data in Unsloth's expected conversation format and re-attaches GAIA
-    metadata needed for evaluation and optional geolocation conditioning.
-    """
+IMAGE_KEY = "png"
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+
+def _load_manifest_records(path: Path) -> list[dict[str, object]]:
+    records = json.loads(path.read_text())
+    if not isinstance(records, list):
+        raise ValueError(f"Expected GAIA manifest to be a JSON list: {path}")
+    return records
+
+
+def _normalize_captions(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        return [value]
+    if value is None or pd.isna(value):
+        return []
+    return [str(value)]
+
+
+class GAIADataset(IterableDataset):
+    """Iterable dataset for the official shard-based GAIA layout."""
 
     def __init__(
         self,
-        image_dir: str,
-        metadata_path: Optional[str] = None,
-        split: Optional[Literal["train", "validation", "test"]] = None,
-        id_column: str = "image_id",
-        caption_column: str = "caption",
-        file_extension: Optional[str] = None,
+        gaia_root: str,
+        split: Literal["train", "validation", "test"],
+        id_column: str = "id",
+        caption_column: str = "captions",
         system_prompt: Optional[str] = None,
         user_prompt: str = "Describe this image in detail.",
         multi_caption: bool = False,
         lat_column: Optional[str] = None,
         lon_column: Optional[str] = None,
         coordinate_perturbation: Optional[Literal["shuffled", "antipodal"]] = None,
-        metadata: Optional[pd.DataFrame] = None,
+        shuffle_samples: bool = False,
     ):
-        self.image_dir = Path(image_dir)
+        self.gaia_root = Path(gaia_root)
+        self.split = split
         self.id_column = id_column
         self.caption_column = caption_column
-        self.file_extension = file_extension
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         self.multi_caption = multi_caption
         self.lat_column = lat_column
         self.lon_column = lon_column
+        self.coordinate_perturbation = coordinate_perturbation
+        self.shuffle_samples = shuffle_samples
 
-        if metadata is not None:
-            self.metadata = metadata
-        elif metadata_path is not None:
-            if metadata_path.endswith(".parquet"):
-                self.metadata = pd.read_parquet(metadata_path)
-            else:
-                self.metadata = pd.read_csv(metadata_path)
-        else:
-            raise ValueError("Either metadata_path or metadata must be provided")
+        split_dir_name, manifest_name = SPLIT_LAYOUT[split]
+        self.shards_dir = self.gaia_root / split_dir_name
+        self.manifest_path = self.gaia_root / manifest_name
 
-        if split is not None:
-            self.metadata = self.metadata[self.metadata["split"] == split].reset_index(drop=True)
+        if not self.manifest_path.exists():
+            raise FileNotFoundError(f"GAIA manifest not found at: {self.manifest_path}")
+        if not self.shards_dir.exists():
+            raise FileNotFoundError(f"GAIA shard directory not found at: {self.shards_dir}")
+
+        self._shard_paths = sorted(self.shards_dir.glob("*.tar"))
+        if not self._shard_paths:
+            raise FileNotFoundError(f"No GAIA shard tar files found in: {self.shards_dir}")
+
+        self.metadata = pd.DataFrame(_load_manifest_records(self.manifest_path))
+        if self.metadata.empty:
+            raise ValueError(f"No records found in GAIA manifest: {self.manifest_path}")
+        if self.id_column not in self.metadata.columns:
+            raise KeyError(f"Expected id column '{self.id_column}' in {self.manifest_path}")
+        if self.caption_column not in self.metadata.columns:
+            raise KeyError(f"Expected caption column '{self.caption_column}' in {self.manifest_path}")
 
         if coordinate_perturbation and lat_column and lon_column:
             if coordinate_perturbation == "shuffled":
@@ -69,62 +103,96 @@ class GAIADataset(Dataset):
                 lon = self.metadata[lon_column].values
                 self.metadata[lon_column] = np.where(lon <= 0, lon + 180, lon - 180)
 
-        self.keys = self.metadata[id_column].tolist()
-        self.keys.sort()
-        self._key_to_idx = {k: i for i, k in enumerate(self.metadata[id_column].tolist())}
-        self._image_paths = {k: self._resolve_image_path(k) for k in self.keys}
+        self.keys = self.metadata[self.id_column].tolist()
+        self._metadata_by_id = {
+            row[self.id_column]: row.to_dict() for _, row in self.metadata.iterrows()
+        }
 
     def __len__(self) -> int:
         return len(self.keys)
 
-    def _resolve_image_path(self, image_id: str) -> Path:
-        image_path = self.image_dir / image_id
-        if image_path.exists():
-            return image_path
+    def _build_pipeline(self):
+        shard_paths = [str(path) for path in self._shard_paths]
+        dataset = wds.WebDataset(
+            shard_paths,
+            shardshuffle=100 if self.shuffle_samples else 0,
+            workersplitter=wds.split_by_worker,
+        ).decode("pil")
+        if self.shuffle_samples:
+            dataset = dataset.shuffle(1024)
+        return dataset
 
-        if self.file_extension:
-            image_path = self.image_dir / f"{image_id}{self.file_extension}"
-            if image_path.exists():
-                return image_path
+    def _read_sample_json(self, sample: dict[str, object]) -> dict[str, object]:
+        value = sample.get("json")
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            return json.loads(value)
+        if isinstance(value, bytes):
+            return json.loads(value.decode("utf-8"))
+        raise TypeError(f"Unsupported GAIA shard json payload type: {type(value)!r}")
 
-        for ext in [".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"]:
-            candidate = self.image_dir / f"{image_id}{ext}"
-            if candidate.exists():
-                return candidate
+    def _read_sample_text(self, sample: dict[str, object]) -> Optional[str]:
+        value = sample.get("txt")
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value.decode("utf-8").strip()
+        return str(value).strip()
 
-        raise FileNotFoundError(
-            f"Image not found for id '{image_id}' in {self.image_dir}. "
-            f"Tried: {image_id}, {image_id}.jpg, {image_id}.png, etc."
-        )
-
-    def _load_image(self, image_id: str) -> Image.Image:
-        image = Image.open(self._image_paths[image_id])
+    def _read_sample_image(self, sample: dict[str, object]) -> Image.Image:
+        image = sample.get(IMAGE_KEY)
+        if image is None:
+            raise FileNotFoundError(f"GAIA shard sample is missing '{IMAGE_KEY}' image data")
+        if not isinstance(image, Image.Image):
+            raise TypeError(f"Expected PIL image for key '{IMAGE_KEY}', got {type(image)!r}")
         if image.mode != "RGB":
             image = image.convert("RGB")
         return image
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        image_id = self.keys[idx]
-        image = self._load_image(image_id)
-
-        metadata_idx = self._key_to_idx[image_id]
-        row = self.metadata.iloc[metadata_idx]
+    def _select_caption(
+        self, references: list[str], text_fallback: Optional[str], rng: random.Random
+    ) -> tuple[str, list[str]]:
+        if not references and text_fallback:
+            references = [text_fallback]
+        if not references:
+            raise ValueError(f"No caption references available for GAIA split '{self.split}'")
 
         if self.multi_caption:
-            captions = row[self.caption_column]
-            caption = random.choice(captions) if isinstance(captions, list) else str(captions)
-        else:
-            caption = str(row[self.caption_column])
+            return rng.choice(references), references
+        return references[0], [references[0]]
+
+    def _build_item(
+        self,
+        image: Image.Image,
+        sample_json: dict[str, object],
+        text_fallback: Optional[str],
+        rng: random.Random,
+    ) -> dict[str, object]:
+        image_id = sample_json.get(self.id_column)
+        if image_id is None:
+            raise KeyError(
+                f"GAIA shard sample is missing id column '{self.id_column}' in its JSON sidecar"
+            )
+
+        row = self._metadata_by_id.get(image_id)
+        if row is None:
+            raise KeyError(f"Image id '{image_id}' not found in GAIA manifest {self.manifest_path}")
+
+        references = _normalize_captions(row.get(self.caption_column))
+        caption, references = self._select_caption(references, text_fallback, rng)
 
         user_prompt = self.user_prompt
         lat, lon = None, None
         if self.lat_column and self.lon_column:
-            lat = float(row[self.lat_column])
-            lon = float(row[self.lon_column])
-            try:
+            lat_value = row.get(self.lat_column)
+            lon_value = row.get(self.lon_column)
+            if lat_value is not None and lon_value is not None:
+                lat = float(lat_value)
+                lon = float(lon_value)
                 user_prompt = user_prompt.format(lat=lat, lon=lon)
-            except (KeyError, IndexError):
-                pass
 
         messages = []
         if self.system_prompt:
@@ -145,21 +213,26 @@ class GAIADataset(Dataset):
             }
         )
 
-        if self.multi_caption:
-            captions_raw = row[self.caption_column]
-            references = list(captions_raw) if isinstance(captions_raw, list) else [str(captions_raw)]
-        else:
-            references = [caption]
-
-        item = {
+        item: dict[str, object] = {
             "messages": messages,
             "image_id": image_id,
             "references": references,
         }
-        if lat is not None:
+        if lat is not None and lon is not None:
             item["lat"] = lat
             item["lon"] = lon
         return item
+
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        worker_info = get_worker_info()
+        seed = worker_info.seed if worker_info is not None else torch.initial_seed()
+        rng = random.Random(seed)
+
+        for sample in self._build_pipeline():
+            sample_json = self._read_sample_json(sample)
+            image = self._read_sample_image(sample)
+            text_fallback = self._read_sample_text(sample)
+            yield self._build_item(image, sample_json, text_fallback, rng)
 
 
 class GAIADataModule(L.LightningDataModule):
@@ -167,13 +240,11 @@ class GAIADataModule(L.LightningDataModule):
 
     def __init__(
         self,
-        image_dir: str,
-        metadata_path: str,
+        gaia_root: str,
         batch_size: int = 1,
         num_workers: int = 4,
-        id_column: str = "image_id",
-        caption_column: str = "caption",
-        file_extension: Optional[str] = None,
+        id_column: str = "id",
+        caption_column: str = "captions",
         system_prompt: Optional[str] = None,
         user_prompt: str = "Describe this image in detail.",
         pin_memory: bool = True,
@@ -186,13 +257,11 @@ class GAIADataModule(L.LightningDataModule):
         super().__init__()
         self.save_hyperparameters()
 
-        self.image_dir = image_dir
-        self.metadata_path = metadata_path
+        self.gaia_root = gaia_root
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.id_column = id_column
         self.caption_column = caption_column
-        self.file_extension = file_extension
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         self.pin_memory = pin_memory
@@ -202,77 +271,89 @@ class GAIADataModule(L.LightningDataModule):
         self.lon_column = lon_column
         self.coordinate_perturbation = coordinate_perturbation
 
-        self._collate_fn: Optional[Callable] = None
+        self._collator: Optional[Callable] = None
         self.train_dataset: Optional[GAIADataset] = None
         self.val_dataset: Optional[GAIADataset] = None
         self.test_dataset: Optional[GAIADataset] = None
         self.predict_dataset: Optional[GAIADataset] = None
 
-    def set_collate_fn(self, collate_fn: Callable):
-        self._collate_fn = collate_fn
+    def set_collator(self, collator: Callable):
+        self._collator = collator
+
+    def _expected_split_paths(self, split: Literal["train", "validation", "test"]) -> tuple[Path, Path]:
+        split_dir_name, manifest_name = SPLIT_LAYOUT[split]
+        root = Path(self.gaia_root)
+        return root / split_dir_name, root / manifest_name
 
     def prepare_data(self):
-        if not os.path.exists(self.image_dir):
-            raise FileNotFoundError(f"Image directory not found at: {self.image_dir}")
-        if not os.path.exists(self.metadata_path):
-            raise FileNotFoundError(f"Metadata file not found at: {self.metadata_path}")
+        root = Path(self.gaia_root)
+        if not root.exists():
+            raise FileNotFoundError(f"GAIA root directory not found at: {root}")
+        for split in ("train", "validation"):
+            shards_dir, manifest_path = self._expected_split_paths(split)
+            if not shards_dir.exists():
+                raise FileNotFoundError(f"GAIA shard directory not found at: {shards_dir}")
+            if not manifest_path.exists():
+                raise FileNotFoundError(f"GAIA manifest file not found at: {manifest_path}")
+            if not any(shards_dir.glob("*.tar")):
+                raise FileNotFoundError(f"No GAIA shard tar files found in: {shards_dir}")
 
-    def _load_metadata(self) -> pd.DataFrame:
-        if self.metadata_path.endswith(".parquet"):
-            return pd.read_parquet(self.metadata_path)
-        return pd.read_csv(self.metadata_path)
+    def _build_dataset(
+        self,
+        split: Literal["train", "validation", "test"],
+        *,
+        shuffle_samples: bool,
+    ) -> GAIADataset:
+        return GAIADataset(
+            gaia_root=self.gaia_root,
+            split=split,
+            id_column=self.id_column,
+            caption_column=self.caption_column,
+            system_prompt=self.system_prompt,
+            user_prompt=self.user_prompt,
+            multi_caption=self.multi_caption,
+            lat_column=self.lat_column,
+            lon_column=self.lon_column,
+            coordinate_perturbation=self.coordinate_perturbation,
+            shuffle_samples=shuffle_samples,
+        )
 
     def setup(self, stage: Optional[str] = None):
-        metadata = self._load_metadata()
-        common_kwargs = {
-            "image_dir": self.image_dir,
-            "metadata": metadata,
-            "id_column": self.id_column,
-            "caption_column": self.caption_column,
-            "file_extension": self.file_extension,
-            "system_prompt": self.system_prompt,
-            "user_prompt": self.user_prompt,
-            "multi_caption": self.multi_caption,
-            "lat_column": self.lat_column,
-            "lon_column": self.lon_column,
-            "coordinate_perturbation": self.coordinate_perturbation,
-        }
-
         if stage == "fit" or stage is None:
-            self.train_dataset = GAIADataset(split="train", **common_kwargs)
-            self.val_dataset = GAIADataset(split="validation", **common_kwargs)
+            self.train_dataset = self._build_dataset("train", shuffle_samples=True)
+            self.val_dataset = self._build_dataset("validation", shuffle_samples=False)
         if stage == "validate":
-            self.val_dataset = GAIADataset(split="validation", **common_kwargs)
-        if stage == "test" or stage is None:
-            self.test_dataset = GAIADataset(split="test", **common_kwargs)
+            self.val_dataset = self._build_dataset("validation", shuffle_samples=False)
+        if stage == "test":
+            self.test_dataset = self._build_dataset("test", shuffle_samples=False)
         if stage == "predict":
-            self.predict_dataset = GAIADataset(split="test", **common_kwargs)
+            self.predict_dataset = self._build_dataset("test", shuffle_samples=False)
 
-    def _create_dataloader(self, dataset: Dataset, shuffle: bool = False) -> DataLoader:
-        if self._collate_fn is None:
+    def _create_dataloader(self, dataset: IterableDataset) -> DataLoader:
+        if self._collator is None:
             raise RuntimeError(
-                "Collate function not set. Call set_collate_fn() with "
+                "Collator not set. Call set_collator() with "
                 "UnslothVisionDataCollator after model initialization."
             )
 
         return DataLoader(
             dataset,
             batch_size=self.batch_size,
-            shuffle=shuffle,
+            shuffle=False,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
-            collate_fn=self._collate_fn,
+            collate_fn=self._collator,
         )
 
     def train_dataloader(self) -> DataLoader:
-        return self._create_dataloader(self.train_dataset, shuffle=True)
+        return self._create_dataloader(self.train_dataset)
 
     def val_dataloader(self) -> DataLoader:
-        return self._create_dataloader(self.val_dataset, shuffle=False)
+        return self._create_dataloader(self.val_dataset)
 
     def test_dataloader(self) -> DataLoader:
-        return self._create_dataloader(self.test_dataset, shuffle=False)
+        return self._create_dataloader(self.test_dataset)
 
     def predict_dataloader(self) -> DataLoader:
-        return self._create_dataloader(self.predict_dataset, shuffle=False)
+        return self._create_dataloader(self.predict_dataset)
