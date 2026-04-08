@@ -280,24 +280,6 @@ class GAIADataModule(L.LightningDataModule):
     def set_collator(self, collator: Callable):
         self._collator = collator
 
-    def _expected_split_paths(self, split: Literal["train", "validation", "test"]) -> tuple[Path, Path]:
-        split_dir_name, manifest_name = SPLIT_LAYOUT[split]
-        root = Path(self.gaia_root)
-        return root / split_dir_name, root / manifest_name
-
-    def prepare_data(self):
-        root = Path(self.gaia_root)
-        if not root.exists():
-            raise FileNotFoundError(f"GAIA root directory not found at: {root}")
-        for split in ("train", "validation"):
-            shards_dir, manifest_path = self._expected_split_paths(split)
-            if not shards_dir.exists():
-                raise FileNotFoundError(f"GAIA shard directory not found at: {shards_dir}")
-            if not manifest_path.exists():
-                raise FileNotFoundError(f"GAIA manifest file not found at: {manifest_path}")
-            if not any(shards_dir.glob("*.tar")):
-                raise FileNotFoundError(f"No GAIA shard tar files found in: {shards_dir}")
-
     def _build_dataset(
         self,
         split: Literal["train", "validation", "test"],
@@ -319,14 +301,14 @@ class GAIADataModule(L.LightningDataModule):
         )
 
     def setup(self, stage: Optional[str] = None):
-        if stage == "fit" or stage is None:
+        if stage in ("fit", None):
             self.train_dataset = self._build_dataset("train", shuffle_samples=True)
             self.val_dataset = self._build_dataset("validation", shuffle_samples=False)
-        if stage == "validate":
+        elif stage == "validate":
             self.val_dataset = self._build_dataset("validation", shuffle_samples=False)
-        if stage == "test":
+        elif stage == "test":
             self.test_dataset = self._build_dataset("test", shuffle_samples=False)
-        if stage == "predict":
+        elif stage == "predict":
             self.predict_dataset = self._build_dataset("test", shuffle_samples=False)
 
     def _create_dataloader(self, dataset: IterableDataset) -> DataLoader:
