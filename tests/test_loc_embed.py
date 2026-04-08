@@ -1,9 +1,12 @@
 import importlib
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 
 import torch
+from safetensors.torch import save_file
 
 
 def _install_qwen3_test_stubs():
@@ -75,12 +78,32 @@ qwen3_module = importlib.import_module("src.lightning_modules.qwen3_vl_module")
 Qwen3VLModule = qwen3_module.Qwen3VLModule
 
 
+def _install_captioning_stub():
+    captioning = types.ModuleType("src.metrics.captioning")
+
+    class CaptioningMetrics:
+        def __init__(self):
+            self.predictions = []
+
+        def update(self, *args, **kwargs):
+            return None
+
+        def compute(self):
+            return {}
+
+        def reset(self):
+            self.predictions = []
+
+    captioning.CaptioningMetrics = CaptioningMetrics
+    sys.modules["src.metrics.captioning"] = captioning
+
+
 def _build_encoder_test_module(num_location_tokens: int = 2):
     module = object.__new__(Qwen3VLModule)
-    module.loc_mode = "encoder"
+    module.loc_mode = "loc_embed"
     module.num_location_tokens = num_location_tokens
     module.device = torch.device("cpu")
-    module._current_batch_geo = None
+    module._location_insertion_state = None
 
     config = types.SimpleNamespace(image_token_id=999, video_token_id=998)
     language_model = types.SimpleNamespace()
@@ -169,7 +192,7 @@ class PrepareModelInputsTest(unittest.TestCase):
             [[11, 12, -100, -100, 13, 14, 15], [21, -100, -100, 22, 23, 24, 25]]
         )
         self.assertTrue(torch.equal(model_batch["labels"], expected_labels))
-        self.assertEqual(module._current_batch_geo["insert_positions"].tolist(), [2, 1])
+        self.assertEqual(module._location_insertion_state["insert_positions"].tolist(), [2, 1])
         self.assertEqual(references, [["a"], ["b"]])
         self.assertEqual(image_ids, ["img1", "img2"])
         self.assertTrue(torch.equal(lat, torch.tensor([52.5, -33.9], dtype=torch.float64)))
@@ -189,14 +212,14 @@ class PrepareModelInputsTest(unittest.TestCase):
 
         expected_labels = torch.tensor([[11, 12, 13, -100, -100, -100]])
         self.assertTrue(torch.equal(model_batch["labels"], expected_labels))
-        self.assertEqual(module._current_batch_geo["insert_positions"].tolist(), [3])
+        self.assertEqual(module._location_insertion_state["insert_positions"].tolist(), [3])
 
     def test_prepare_model_inputs_is_invariant_for_non_encoder_modes(self):
         module = object.__new__(Qwen3VLModule)
-        module.loc_mode = "text"
+        module.loc_mode = "loc_text"
         module.num_location_tokens = 2
         module.device = torch.device("cpu")
-        module._current_batch_geo = None
+        module._location_insertion_state = None
 
         batch = {
             "input_ids": torch.tensor([[101, 102, 103]]),
@@ -211,11 +234,111 @@ class PrepareModelInputsTest(unittest.TestCase):
         model_batch, references, image_ids, lat, lon = module._prepare_model_inputs(batch)
 
         self.assertTrue(torch.equal(model_batch["labels"], torch.tensor([[11, 12, 13]])))
-        self.assertIsNone(module._current_batch_geo)
+        self.assertIsNone(module._location_insertion_state)
         self.assertEqual(references, [["ref"]])
         self.assertEqual(image_ids, ["img"])
         self.assertTrue(torch.equal(lat, torch.tensor([1.0], dtype=torch.float64)))
         self.assertTrue(torch.equal(lon, torch.tensor([2.0], dtype=torch.float64)))
+
+
+class AdapterArtifactSetupTest(unittest.TestCase):
+    def test_fit_rejects_adapter_dir(self):
+        module = Qwen3VLModule(adapter_dir="/tmp/adapter")
+        module.trainer = types.SimpleNamespace(datamodule=None)
+
+        with self.assertRaisesRegex(ValueError, "cannot be set for fit"):
+            module.setup("fit")
+
+    def test_validate_requires_adapter_dir(self):
+        module = Qwen3VLModule()
+        module.trainer = types.SimpleNamespace(datamodule=None)
+
+        with self.assertRaisesRegex(ValueError, "adapter_dir"):
+            module.setup("validate")
+
+    def test_validate_loads_saved_adapters_without_wrapping_peft_again(self):
+        _install_captioning_stub()
+        calls = {}
+
+        class FakeModel:
+            def __init__(self):
+                self._param = torch.nn.Parameter(torch.ones(1))
+                config = types.SimpleNamespace(
+                    image_token_id=999,
+                    video_token_id=998,
+                    text_config=types.SimpleNamespace(hidden_size=16),
+                )
+                language_model = types.SimpleNamespace(
+                    register_forward_pre_hook=lambda *args, **kwargs: types.SimpleNamespace(remove=lambda: None)
+                )
+                inner = types.SimpleNamespace(config=config, language_model=language_model)
+                self.base_model = types.SimpleNamespace(model=types.SimpleNamespace(model=inner))
+
+            def parameters(self):
+                return [self._param]
+
+            def named_parameters(self):
+                return [("dummy_weight", self._param)]
+
+        original_from_pretrained = qwen3_module.FastVisionModel.from_pretrained
+        original_get_peft_model = qwen3_module.FastVisionModel.get_peft_model
+        original_for_training = qwen3_module.FastVisionModel.for_training
+
+        try:
+            def fake_from_pretrained(*args, **kwargs):
+                calls["model_name"] = kwargs["model_name"]
+                return FakeModel(), types.SimpleNamespace()
+
+            def fake_get_peft_model(*args, **kwargs):
+                calls["wrapped_with_peft"] = True
+                return args[0]
+
+            qwen3_module.FastVisionModel.from_pretrained = staticmethod(fake_from_pretrained)
+            qwen3_module.FastVisionModel.get_peft_model = staticmethod(fake_get_peft_model)
+            qwen3_module.FastVisionModel.for_training = staticmethod(lambda *args, **kwargs: None)
+
+            module = Qwen3VLModule(adapter_dir="/tmp/adapter", loc_mode="no_loc")
+            module.trainer = types.SimpleNamespace(datamodule=None)
+            module.setup("validate")
+
+            self.assertEqual(calls["model_name"], "/tmp/adapter")
+            self.assertNotIn("wrapped_with_peft", calls)
+        finally:
+            qwen3_module.FastVisionModel.from_pretrained = original_from_pretrained
+            qwen3_module.FastVisionModel.get_peft_model = original_get_peft_model
+            qwen3_module.FastVisionModel.for_training = original_for_training
+
+
+class LocationProjectionArtifactLoadTest(unittest.TestCase):
+    def test_load_location_projection_artifacts_restores_saved_weights(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            saved_projection = torch.nn.Linear(3, 4)
+            projection_path = Path(tmpdir) / "location_modality_projection.safetensors"
+            save_file(saved_projection.state_dict(), projection_path)
+
+            module = object.__new__(Qwen3VLModule)
+            module.adapter_dir = tmpdir
+            module.device = torch.device("cpu")
+            module.location_modality_projection = torch.nn.Linear(3, 4)
+
+            for parameter in module.location_modality_projection.parameters():
+                torch.nn.init.zeros_(parameter)
+
+            module._load_location_projection_artifacts()
+
+            expected = saved_projection.state_dict()
+            actual = module.location_modality_projection.state_dict()
+            for key in expected:
+                self.assertTrue(torch.equal(actual[key], expected[key]))
+
+    def test_load_location_projection_artifacts_requires_saved_file(self):
+        module = object.__new__(Qwen3VLModule)
+        module.adapter_dir = "/tmp/missing-adapter-dir"
+        module.device = torch.device("cpu")
+        module.location_modality_projection = torch.nn.Linear(3, 4)
+
+        with self.assertRaises(FileNotFoundError):
+            module._load_location_projection_artifacts()
 
 
 if __name__ == "__main__":

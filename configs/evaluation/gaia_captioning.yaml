@@ -4,6 +4,7 @@
 
 paths:
   output_dir: ${oc.env:EVAL_OUTPUT_DIR,./outputs/eval}
+  adapter_dir: ${oc.env:EVAL_ADAPTER_DIR,""}
 
 trainer:
   default_root_dir: ${paths.output_dir}
@@ -11,6 +12,7 @@ trainer:
 
 model:
   init_args:
+    adapter_dir: ${paths.adapter_dir}
     val_generate_batches: -1
     test_predictions_path: null
 

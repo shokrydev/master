@@ -5,6 +5,7 @@ seed_everything: 42
 
 paths:
   output_dir: ${oc.env:FINETUNING_OUTPUT_DIR,./outputs}
+  adapter_dir: ${oc.env:FINETUNING_ADAPTER_DIR,${paths.output_dir}/adapter}
   gaia_root: ${oc.env:GAIA_ROOT,data/gaia}
   satclip_checkpoint_path: ${oc.env:SATCLIP_CHECKPOINT_PATH,data/satclip/satclip-vit16-l10.ckpt}
 
@@ -21,7 +22,7 @@ trainer:
 
   log_every_n_steps: 10
   enable_progress_bar: true
-  enable_checkpointing: true
+  enable_checkpointing: false
   default_root_dir: ${paths.output_dir}
 
   gradient_clip_val: 1.0
@@ -34,14 +35,11 @@ trainer:
   strategy: auto
 
   callbacks:
-    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    - class_path: src.callbacks.SaveQLoRAAdaptersCallback
       init_args:
-        filename: "step-{step:06d}-loss-{val/loss:.4f}"
+        dirpath: ${paths.adapter_dir}
         monitor: val/loss
         mode: min
-        save_top_k: 3
-        save_last: true
-        every_n_train_steps: 500
 
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
@@ -62,6 +60,7 @@ model:
   class_path: src.lightning_modules.Qwen3VLModule
   init_args:
     model_name_or_path: unsloth/Qwen3-VL-2B-Instruct
+    adapter_dir: null
     max_seq_length: 2048
 
     load_in_4bit: true

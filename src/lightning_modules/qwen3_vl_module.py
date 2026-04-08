@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 import bitsandbytes as bnb
 import lightning as L
 import torch
+from safetensors.torch import load_file
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
@@ -31,12 +32,13 @@ class Qwen3VLModule(L.LightningModule):
     - Optimized gradient checkpointing
     - Memory-efficient training
 
-    For model saving, use ModelSaveCallback from src.callbacks.
+    Training saves adapter artifacts through a Lightning callback.
     """
 
     def __init__(
         self,
         model_name_or_path: str = "unsloth/Qwen3-VL-2B-Instruct",
+        adapter_dir: Optional[str] = None,
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
         lora_r: int = 16,
@@ -54,7 +56,7 @@ class Qwen3VLModule(L.LightningModule):
         max_steps: Optional[int] = None,
         max_new_tokens: int = 256,
         val_generate_batches: int = 0,
-        loc_mode: Literal["none", "text", "encoder"] = "none",
+        loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
         satclip_checkpoint: Optional[str] = None,
         satclip_dim: int = 256,
         num_location_tokens: int = 1,
@@ -65,6 +67,7 @@ class Qwen3VLModule(L.LightningModule):
 
         Args:
             model_name_or_path: Unsloth model ID (e.g., "unsloth/Qwen3-VL-2B-Instruct")
+            adapter_dir: Saved adapter directory for validate/test/predict
             max_seq_length: Maximum sequence length for training
             load_in_4bit: Whether to load model in 4-bit quantization
             lora_r: LoRA rank
@@ -85,7 +88,7 @@ class Qwen3VLModule(L.LightningModule):
             max_new_tokens: Max tokens to generate during validation
             val_generate_batches: How many val batches to run generation on
                 (0 = no generation metrics, -1 = all batches). Test always generates.
-            loc_mode: Location conditioning mode ("none", "text", "encoder")
+            loc_mode: Location conditioning mode ("no_loc", "loc_text", "loc_embed")
             satclip_checkpoint: Path to SatCLIP checkpoint (required for encoder mode)
             satclip_dim: SatCLIP embedding dimension
             num_location_tokens: Number of location tokens to insert before the visual block (encoder mode)
@@ -96,6 +99,7 @@ class Qwen3VLModule(L.LightningModule):
         self.save_hyperparameters()
 
         self.model_name_or_path = model_name_or_path
+        self.adapter_dir = str(adapter_dir) if adapter_dir else None
         self.max_seq_length = max_seq_length
         self.load_in_4bit = load_in_4bit
         self.lora_r = lora_r
@@ -121,13 +125,13 @@ class Qwen3VLModule(L.LightningModule):
 
         self.model = None
         self.tokenizer = None
-        self._data_collator = None
+        self._collator = None
 
         # loc_embed components (initialized in setup)
         self.satclip = None
         self.location_modality_projection = None
         self._geo_hook_handle = None
-        self._current_batch_geo = None
+        self._location_insertion_state = None
 
         # Test prediction accumulator (for saving per-sample predictions to JSON)
         self._test_predictions: List[Dict[str, Any]] = []
@@ -139,48 +143,62 @@ class Qwen3VLModule(L.LightningModule):
     def setup(self, stage: str):
         """Load model with Unsloth and configure QLoRA."""
         if self.model is not None:
+            self._set_datamodule_collator()
             return
 
+        if stage == "fit" and self.adapter_dir:
+            raise ValueError("adapter_dir cannot be set for fit; training starts from a base model")
+        if stage in {"validate", "test", "predict"} and not self.adapter_dir:
+            raise ValueError(
+                f"{stage} requires model.init_args.adapter_dir to point at saved adapters"
+            )
+
+        model_source = self.adapter_dir or self.model_name_or_path
+
         self.model, self.tokenizer = FastVisionModel.from_pretrained(
-            model_name=self.model_name_or_path,
+            model_name=model_source,
             max_seq_length=self.max_seq_length,
             dtype=None,
             load_in_4bit=self.load_in_4bit,
             use_gradient_checkpointing="unsloth",
         )
 
-        # These are Qwen's internal module names for the modality projection.
-        # Keep the names unchanged so PEFT/Unsloth can find the pretrained modules.
-        modules_to_save = self.modules_to_save
-        if modules_to_save is None:
-            modules_to_save = list(QWEN_MODALITY_PROJECTION_MODULES)
+        if self.adapter_dir is None:
+            # These are Qwen's internal module names for the modality projection.
+            # Keep the names unchanged so PEFT/Unsloth can find the pretrained modules.
+            modules_to_save = self.modules_to_save
+            if modules_to_save is None:
+                modules_to_save = list(QWEN_MODALITY_PROJECTION_MODULES)
 
-        self.model = FastVisionModel.get_peft_model(
-            self.model,
-            r=self.lora_r,
-            target_modules=self.lora_target_modules,
-            lora_alpha=self.lora_alpha,
-            lora_dropout=self.lora_dropout,
-            bias="none",
-            use_gradient_checkpointing="unsloth",
-            finetune_vision_layers=self.finetune_vision_layers,
-            finetune_language_layers=self.finetune_language_layers,
-            finetune_attention_modules=self.finetune_attention_modules,
-            finetune_mlp_modules=self.finetune_mlp_modules,
-            modules_to_save=modules_to_save if modules_to_save else None,
-        )
+            self.model = FastVisionModel.get_peft_model(
+                self.model,
+                r=self.lora_r,
+                target_modules=self.lora_target_modules,
+                lora_alpha=self.lora_alpha,
+                lora_dropout=self.lora_dropout,
+                bias="none",
+                use_gradient_checkpointing="unsloth",
+                finetune_vision_layers=self.finetune_vision_layers,
+                finetune_language_layers=self.finetune_language_layers,
+                finetune_attention_modules=self.finetune_attention_modules,
+                finetune_mlp_modules=self.finetune_mlp_modules,
+                modules_to_save=modules_to_save if modules_to_save else None,
+            )
 
         FastVisionModel.for_training(self.model)
 
         # Wrap collator with GeoAwareCollator
         base_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
-        self._data_collator = GeoAwareCollator(
-            base_collator, has_geo=(self.loc_mode != "none")
+        self._collator = GeoAwareCollator(
+            base_collator, include_coordinates=self.loc_mode in {"loc_text", "loc_embed"}
         )
+        self._set_datamodule_collator()
 
         # Set up loc_embed components
-        if self.loc_mode == "encoder":
+        if self.loc_mode == "loc_embed":
             self._setup_loc_embed()
+            if self.adapter_dir is not None:
+                self._load_location_projection_artifacts()
 
         # Initialize captioning metrics
         from src.metrics.captioning import CaptioningMetrics
@@ -200,11 +218,14 @@ class Qwen3VLModule(L.LightningModule):
         if proj_params:
             self.print(f"LocationModalityProjection params: {proj_params:,}")
 
-    def get_data_collator(self):
-        """Get the UnslothVisionDataCollator for use with DataModule."""
-        if self._data_collator is None:
-            raise RuntimeError("Data collator not available. Call setup() first.")
-        return self._data_collator
+    def _load_location_projection_artifacts(self) -> None:
+        """Load the saved location projection that lives outside the PEFT adapter package."""
+        projection_path = Path(self.adapter_dir) / "location_modality_projection.safetensors"
+        if not projection_path.is_file():
+            raise FileNotFoundError(f"Missing location projection artifacts: {projection_path}")
+
+        state_dict = load_file(projection_path, device=str(self.device))
+        self.location_modality_projection.load_state_dict(state_dict)
 
     def _setup_loc_embed(self):
         """Initialize SatCLIP encoder and LocationModalityProjection for loc_embed mode."""
@@ -212,7 +233,7 @@ class Qwen3VLModule(L.LightningModule):
         from src.models.satclip import get_satclip
 
         if not self.satclip_checkpoint:
-            raise ValueError("satclip_checkpoint is required when loc_mode='encoder'")
+            raise ValueError("satclip_checkpoint is required when loc_mode='loc_embed'")
 
         # Load frozen SatCLIP
         self.satclip = get_satclip(self.satclip_checkpoint, device=self.device)
@@ -249,7 +270,7 @@ class Qwen3VLModule(L.LightningModule):
         #        → .model (Qwen3VLModel) → .language_model (Qwen3VLTextModel)
         language_model = self.model.base_model.model.model.language_model
         self._geo_hook_handle = language_model.register_forward_pre_hook(
-            self._geo_embed_hook, with_kwargs=True
+            self._location_embed_insertion_hook, with_kwargs=True
         )
         self.print(f"Registered geo embedding hook on {type(language_model).__name__}")
         self.print(f"LocationModalityProjection: {self.satclip_dim} → {hidden_size} × {self.num_location_tokens}")
@@ -303,19 +324,19 @@ class Qwen3VLModule(L.LightningModule):
             out[:, b, p + n :] = position_ids[:, b, p:] + n
         return out
 
-    def _geo_embed_hook(self, module, args, kwargs):
+    def _location_embed_insertion_hook(self, module, args, kwargs):
         """Forward pre-hook that inserts location embeddings before visual tokens."""
-        geo = self._current_batch_geo
-        if geo is None:
+        location_state = self._location_insertion_state
+        if location_state is None:
             return args, kwargs
 
         # Skip during KV-cache steps (autoregressive generation after the first forward)
         if kwargs.get("past_key_values") is not None:
             return args, kwargs
 
-        lat = geo["lat"]
-        lon = geo["lon"]
-        insert_positions = geo["insert_positions"]
+        lat = location_state["lat"]
+        lon = location_state["lon"]
+        insert_positions = location_state["insert_positions"]
         device = lat.device
 
         # SatCLIP expects (B, 2) of (lon, lat) as float64
@@ -369,11 +390,13 @@ class Qwen3VLModule(L.LightningModule):
         references = batch.pop("references", None)
         image_ids = batch.pop("image_ids", None)
 
-        if self.loc_mode == "encoder" and lat is not None:
+        if self.loc_mode == "loc_embed":
+            if lat is None or lon is None:
+                raise ValueError("loc_mode='loc_embed' requires both lat and lon in the batch")
             input_ids = batch.get("input_ids")
             attention_mask = batch.get("attention_mask")
             if input_ids is None:
-                raise ValueError("input_ids are required for loc_mode='encoder'")
+                raise ValueError("input_ids are required for loc_mode='loc_embed'")
 
             config = self.model.base_model.model.model.config
             image_token_id = config.image_token_id
@@ -390,7 +413,7 @@ class Qwen3VLModule(L.LightningModule):
                 fallback = torch.full_like(first_visual, input_ids.shape[1])
             insert_positions = torch.where(has_visual, first_visual, fallback)
 
-            self._current_batch_geo = {
+            self._location_insertion_state = {
                 "lat": lat.to(self.device),
                 "lon": lon.to(self.device),
                 "insert_positions": insert_positions.to(self.device),
@@ -407,21 +430,13 @@ class Qwen3VLModule(L.LightningModule):
 
         return batch, references, image_ids, lat, lon
 
-    def _push_collator_to_datamodule(self):
-        """Push the data collator to the DataModule if available."""
-        dm = getattr(self.trainer, "datamodule", None)
-        if dm is not None and hasattr(dm, "set_collate_fn") and dm._collate_fn is None:
-            dm.set_collate_fn(self.get_data_collator())
-            self.print("Data collator set on DataModule")
-
-    def on_fit_start(self):
-        self._push_collator_to_datamodule()
-
-    def on_validation_start(self):
-        self._push_collator_to_datamodule()
-
-    def on_test_start(self):
-        self._push_collator_to_datamodule()
+    def _set_datamodule_collator(self):
+        """Attach the collator to the active datamodule once it exists."""
+        if self._collator is None:
+            return
+        datamodule = getattr(self.trainer, "datamodule", None)
+        if datamodule is not None and hasattr(datamodule, "set_collator"):
+            datamodule.set_collator(self._collator)
 
     def forward(self, **inputs) -> Any:
         """Forward pass through the model."""
@@ -431,7 +446,7 @@ class Qwen3VLModule(L.LightningModule):
         """Training step."""
         batch, _, _, _, _ = self._prepare_model_inputs(batch)
         outputs = self.model(**batch)
-        self._current_batch_geo = None
+        self._location_insertion_state = None
         self.log("train/loss", outputs.loss, on_step=True, on_epoch=True, prog_bar=True)
         return outputs.loss
 
@@ -491,7 +506,7 @@ class Qwen3VLModule(L.LightningModule):
             except Exception as e:
                 self.print(f"[Val] Generation failed: {e}")
 
-        self._current_batch_geo = None
+        self._location_insertion_state = None
         return result
 
     def on_validation_epoch_end(self) -> None:
@@ -538,7 +553,7 @@ class Qwen3VLModule(L.LightningModule):
             except Exception as e:
                 self.print(f"[Test] Generation failed: {e}")
 
-        self._current_batch_geo = None
+        self._location_insertion_state = None
         return result
 
     def on_test_epoch_end(self) -> None:
@@ -614,19 +629,3 @@ class Qwen3VLModule(L.LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
         }
-
-    def on_save_checkpoint(self, checkpoint: Dict[str, Any]):
-        """Save additional info to checkpoint."""
-        checkpoint["model_name_or_path"] = self.model_name_or_path
-        checkpoint["unsloth_config"] = {
-            "lora_r": self.lora_r,
-            "lora_alpha": self.lora_alpha,
-            "load_in_4bit": self.load_in_4bit,
-        }
-        if self.location_modality_projection is not None:
-            checkpoint["location_modality_projection"] = self.location_modality_projection.state_dict()
-
-    def on_load_checkpoint(self, checkpoint: Dict[str, Any]):
-        """Restore LocationModalityProjection state from checkpoint."""
-        if "location_modality_projection" in checkpoint and self.location_modality_projection is not None:
-            self.location_modality_projection.load_state_dict(checkpoint["location_modality_projection"])
