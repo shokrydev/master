@@ -59,11 +59,9 @@ trainer:
 model:
   class_path: src.lightning_modules.Qwen3VLModule
   init_args:
-    model_name_or_path: unsloth/Qwen3-VL-2B-Instruct
+    model_name_or_path: unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit
     adapter_dir: null
     max_seq_length: 2048
-
-    load_in_4bit: true
 
     lora_r: 16
     lora_alpha: 16

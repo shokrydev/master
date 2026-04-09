@@ -37,10 +37,9 @@ class Qwen3VLModule(L.LightningModule):
 
     def __init__(
         self,
-        model_name_or_path: str = "unsloth/Qwen3-VL-2B-Instruct",
+        model_name_or_path: str = "unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit",
         adapter_dir: Optional[str] = None,
         max_seq_length: int = 2048,
-        load_in_4bit: bool = True,
         lora_r: int = 16,
         lora_alpha: int = 16,
         lora_dropout: float = 0.0,
@@ -66,10 +65,9 @@ class Qwen3VLModule(L.LightningModule):
         Initialize Qwen3-VL finetuning module.
 
         Args:
-            model_name_or_path: Unsloth model ID (e.g., "unsloth/Qwen3-VL-2B-Instruct")
+            model_name_or_path: Unsloth model ID (e.g., "unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit")
             adapter_dir: Saved adapter directory for validate/test/predict
             max_seq_length: Maximum sequence length for training
-            load_in_4bit: Whether to load model in 4-bit quantization
             lora_r: LoRA rank
             lora_alpha: LoRA alpha scaling factor
             lora_dropout: LoRA dropout rate
@@ -101,7 +99,6 @@ class Qwen3VLModule(L.LightningModule):
         self.model_name_or_path = model_name_or_path
         self.adapter_dir = str(adapter_dir) if adapter_dir else None
         self.max_seq_length = max_seq_length
-        self.load_in_4bit = load_in_4bit
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
@@ -159,7 +156,7 @@ class Qwen3VLModule(L.LightningModule):
             model_name=model_source,
             max_seq_length=self.max_seq_length,
             dtype=None,
-            load_in_4bit=self.load_in_4bit,
+            load_in_4bit=True,
             use_gradient_checkpointing="unsloth",
         )
 
