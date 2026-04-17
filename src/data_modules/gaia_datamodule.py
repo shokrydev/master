@@ -13,7 +13,6 @@ import webdataset as wds
 from PIL import Image, ImageFile
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
-
 SPLIT_LAYOUT: dict[str, tuple[str, str]] = {
     "train": ("train", "train_data.json"),
     "validation": ("val", "val_data.json"),

@@ -1,31 +1,30 @@
 #!/usr/bin/env python3
-"""Lightning CLI entrypoint for VLM training, evaluation, and export."""
+"""Lightning CLI entrypoint for finetuning and evaluation."""
 
 import os
 from datetime import datetime
 from pathlib import Path
 
-import unsloth  # Must be imported before transformers for Unsloth optimizations
-
 import lightning as L
-from lightning.pytorch.cli import LightningCLI, LightningArgumentParser
+import unsloth  # Must be imported before transformers for Unsloth optimizations
+from lightning.pytorch.cli import LightningCLI
 
-# Import modules for CLI auto-discovery
+# Import concrete classes so Lightning CLI can discover them via class_path.
+from src.data_modules import GAIADataModule
 from src.lightning_modules import Qwen3VLModule
-from src.data_modules import VLMDataModule
 
 
-class VLMTrainingCLI(LightningCLI):
-    """Custom Lightning CLI for VLM training."""
+class FinetuningCLI(LightningCLI):
+    """Custom Lightning CLI for finetuning runs."""
 
     LOC_MODE_TO_RUN_LABEL = {
-        "none": "baseline",
-        "text": "loc_text",
-        "encoder": "loc_embed",
+        "no_loc": "baseline",
+        "loc_text": "loc_text",
+        "loc_embed": "loc_embed",
     }
 
     @staticmethod
-    def _is_generic_outputs_root(path_value: object) -> bool:
+    def _uses_default_outputs_root(path_value: object) -> bool:
         if path_value is None:
             return False
         normalized = Path(str(path_value)).as_posix().rstrip("/")
@@ -49,12 +48,12 @@ class VLMTrainingCLI(LightningCLI):
             return
 
         default_root_dir = getattr(trainer, "default_root_dir", None)
-        if not self._is_generic_outputs_root(default_root_dir):
+        if not self._uses_default_outputs_root(default_root_dir):
             return
 
         model_cfg = getattr(config, "model", None)
         model_args = getattr(model_cfg, "init_args", None)
-        loc_mode = getattr(model_args, "loc_mode", "run") if model_args is not None else "run"
+        loc_mode = getattr(model_args, "loc_mode", "no_loc") if model_args is not None else "no_loc"
         run_label = self.LOC_MODE_TO_RUN_LABEL.get(str(loc_mode), str(loc_mode))
         model_name = getattr(model_args, "model_name_or_path", "model") if model_args is not None else "model"
         model_slug = str(model_name).split("/")[-1].lower().replace(".", "_")
@@ -70,7 +69,7 @@ class VLMTrainingCLI(LightningCLI):
             for callback in callbacks:
                 init_args = getattr(callback, "init_args", None)
                 dirpath = getattr(init_args, "dirpath", None) if init_args is not None else None
-                if dirpath and self._is_generic_outputs_root(Path(dirpath).parent):
+                if dirpath and self._uses_default_outputs_root(Path(dirpath).parent):
                     init_args.dirpath = self._retarget_path(dirpath, old_root, run_dir_str)
 
         loggers = getattr(trainer, "logger", None)
@@ -78,43 +77,15 @@ class VLMTrainingCLI(LightningCLI):
             for logger in loggers:
                 init_args = getattr(logger, "init_args", None)
                 save_dir = getattr(init_args, "save_dir", None) if init_args is not None else None
-                if save_dir and self._is_generic_outputs_root(save_dir):
+                if save_dir and self._uses_default_outputs_root(save_dir):
                     init_args.save_dir = run_dir_str
-
-    def add_arguments_to_parser(self, parser: LightningArgumentParser) -> None:
-        """Register project-specific export arguments."""
-        parser.add_argument(
-            "--export_gguf",
-            type=str,
-            default=None,
-            help="Export trained model to GGUF format at specified path",
-        )
-        parser.add_argument(
-            "--export_gguf_quantization",
-            type=str,
-            default="q4_k_m",
-            choices=["f16", "f32", "q8_0", "q4_k_m", "q5_k_m", "q2_k"],
-            help="GGUF quantization method",
-        )
-        parser.add_argument(
-            "--export_merged",
-            type=str,
-            default=None,
-            help="Export merged model (LoRA merged into base) at specified path",
-        )
-        parser.add_argument(
-            "--push_to_hub",
-            type=str,
-            default=None,
-            help="Push model to HuggingFace Hub (provide repo_id)",
-        )
 
     def before_fit(self) -> None:
         """Called before fit starts."""
         # Log configuration
         if self.trainer.is_global_zero:
             print("\n" + "=" * 60)
-            print("VLM Training Configuration")
+            print("Finetuning Configuration")
             print("=" * 60)
 
             # Model info (handle different model types)
@@ -134,41 +105,10 @@ class VLMTrainingCLI(LightningCLI):
             print(f"Precision: {self.trainer.precision}")
             print("=" * 60 + "\n")
 
-    def after_fit(self) -> None:
-        """Called after fit completes."""
-        if not self.trainer.is_global_zero:
-            return
-
-        # Handle exports — self.model is the LightningModule (Qwen3VLModule),
-        # the Unsloth model and tokenizer live on it as attributes.
-        config = self.config.get(self.subcommand, self.config)
-        unsloth_model = self.model.model
-        tokenizer = self.model.tokenizer
-
-        # Export to GGUF
-        export_gguf = getattr(config, "export_gguf", None)
-        if export_gguf and hasattr(unsloth_model, "save_pretrained_gguf"):
-            quantization = getattr(config, "export_gguf_quantization", "q4_k_m")
-            print(f"\nExporting model to GGUF: {export_gguf}")
-            unsloth_model.save_pretrained_gguf(export_gguf, tokenizer, quantization_method=quantization)
-
-        # Export merged model
-        export_merged = getattr(config, "export_merged", None)
-        if export_merged and hasattr(unsloth_model, "save_pretrained_merged"):
-            print(f"\nExporting merged model: {export_merged}")
-            unsloth_model.save_pretrained_merged(export_merged, tokenizer)
-
-        # Push to hub (merged model)
-        push_to_hub = getattr(config, "push_to_hub", None)
-        if push_to_hub and hasattr(unsloth_model, "push_to_hub_merged"):
-            print(f"\nPushing merged model to HuggingFace Hub: {push_to_hub}")
-            unsloth_model.push_to_hub_merged(push_to_hub, tokenizer=tokenizer)
-
-
 def cli_main() -> None:
     """Run the CLI."""
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-    cli = VLMTrainingCLI(
+    cli = FinetuningCLI(
         model_class=L.LightningModule,
         datamodule_class=L.LightningDataModule,
         subclass_mode_model=True,

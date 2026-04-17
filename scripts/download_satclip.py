@@ -11,7 +11,6 @@ from pathlib import Path
 
 from huggingface_hub import hf_hub_download
 
-
 MODELS = {
     "SatCLIP-ViT16-L40": ("microsoft/SatCLIP-ViT16-L40", "satclip-vit16-l40.ckpt"),
     "SatCLIP-ViT16-L10": ("microsoft/SatCLIP-ViT16-L10", "satclip-vit16-l10.ckpt"),
