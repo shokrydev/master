@@ -1,7 +1,6 @@
 # Metrics for Visual Question Answering (VQA) Tasks
 
 import re
-from typing import List, Optional, Union
 
 import torch
 from torchmetrics import Metric
@@ -64,7 +63,7 @@ class VQAAccuracy(Metric):
             return prediction in target or target in prediction
         return prediction == target
 
-    def update(self, predictions: List[str], targets: List[str]):
+    def update(self, predictions: list[str], targets: list[str]):
         """
         Update metric state.
 
@@ -72,7 +71,7 @@ class VQAAccuracy(Metric):
             predictions: List of predicted answers
             targets: List of ground truth answers
         """
-        for pred, target in zip(predictions, targets):
+        for pred, target in zip(predictions, targets, strict=True):
             if self._match(pred, target):
                 self.correct += 1
             self.total += 1
@@ -116,7 +115,7 @@ class VQAAccuracyMultiRef(Metric):
         text = re.sub(r'[^\w\s]', '', text)
         return text
 
-    def update(self, predictions: List[str], targets: List[List[str]]):
+    def update(self, predictions: list[str], targets: list[list[str]]):
         """
         Update metric state.
 
@@ -124,7 +123,7 @@ class VQAAccuracyMultiRef(Metric):
             predictions: List of predicted answers
             targets: List of lists of acceptable answers
         """
-        for pred, target_list in zip(predictions, targets):
+        for pred, target_list in zip(predictions, targets, strict=True):
             pred_norm = self._normalize_text(pred) if self.normalize else pred
 
             matched = False
@@ -165,8 +164,8 @@ class ExactMatchAccuracy(Metric):
     def _normalize_text(self, text: str) -> str:
         return text.lower().strip()
 
-    def update(self, predictions: List[str], targets: List[str]):
-        for pred, target in zip(predictions, targets):
+    def update(self, predictions: list[str], targets: list[str]):
+        for pred, target in zip(predictions, targets, strict=True):
             if self.normalize:
                 pred = self._normalize_text(pred)
                 target = self._normalize_text(target)
@@ -220,8 +219,8 @@ class TokenF1Score(Metric):
             return 0.0
         return 2 * precision * recall / (precision + recall)
 
-    def update(self, predictions: List[str], targets: List[str]):
-        for pred, target in zip(predictions, targets):
+    def update(self, predictions: list[str], targets: list[str]):
+        for pred, target in zip(predictions, targets, strict=True):
             pred_tokens = self._tokenize(pred)
             target_tokens = self._tokenize(target)
             f1 = self._compute_f1(pred_tokens, target_tokens)

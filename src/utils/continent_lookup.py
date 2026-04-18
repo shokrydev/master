@@ -1,7 +1,7 @@
 # Geographic utilities for GAIA dataset analysis
 # Maps (lat, lon) coordinates to continents using offline reverse geocoding
 
-from typing import List, Optional, Sequence
+from collections.abc import Sequence
 
 import reverse_geocoder as rg
 
@@ -41,7 +41,7 @@ for _continent, _codes in _CONTINENT_COUNTRIES.items():
         _CC_TO_CONTINENT[_cc] = _continent
 
 
-def assign_continent(lat: float, lon: float) -> Optional[str]:
+def assign_continent(lat: float, lon: float) -> str | None:
     """Assign continent from a single (lat, lon) coordinate."""
     result = rg.search([(lat, lon)])[0]
     return _CC_TO_CONTINENT.get(result["cc"])
@@ -49,8 +49,8 @@ def assign_continent(lat: float, lon: float) -> Optional[str]:
 
 def assign_continents(
     lats: Sequence[float], lons: Sequence[float]
-) -> List[Optional[str]]:
+) -> list[str | None]:
     """Assign continents for a batch of coordinates (single k-d tree lookup)."""
-    coords = list(zip(lats, lons))
+    coords = list(zip(lats, lons, strict=True))
     results = rg.search(coords)
     return [_CC_TO_CONTINENT.get(r["cc"]) for r in results]

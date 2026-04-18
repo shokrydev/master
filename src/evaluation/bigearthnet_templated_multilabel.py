@@ -1,7 +1,6 @@
 # BigEarthNet-v2 prompted multilabel evaluation workflow
 
 import re
-from typing import Dict, List, Optional
 
 import torch
 
@@ -31,7 +30,7 @@ BIGEARTHNET_19_LABELS = [
 ]
 
 # Common short-forms and aliases -> canonical label
-BIGEARTHNET_19_ALIASES: Dict[str, str] = {
+BIGEARTHNET_19_ALIASES: dict[str, str] = {
     "urban": "Urban fabric",
     "industrial": "Industrial or commercial units",
     "commercial": "Industrial or commercial units",
@@ -84,16 +83,16 @@ class BigEarthNetMultilabelEvaluator:
 
     def __init__(
         self,
-        labels: Optional[List[str]] = None,
-        aliases: Optional[Dict[str, str]] = None,
+        labels: list[str] | None = None,
+        aliases: dict[str, str] | None = None,
     ):
         self.labels = labels or BIGEARTHNET_19_LABELS
         self.aliases = aliases or BIGEARTHNET_19_ALIASES
         self.label_to_idx = {name: i for i, name in enumerate(self.labels)}
         self._matchers = self._build_matchers()
 
-    def _build_matchers(self) -> List[tuple]:
-        entries: List[tuple] = []
+    def _build_matchers(self) -> list[tuple]:
+        entries: list[tuple] = []
         for name in self.labels:
             entries.append((name, self.label_to_idx[name]))
         for alias, canonical in self.aliases.items():
@@ -116,7 +115,7 @@ class BigEarthNetMultilabelEvaluator:
                 vector[idx] = 1.0
         return vector
 
-    def vectorize_target(self, label_names: List[str]) -> torch.Tensor:
+    def vectorize_target(self, label_names: list[str]) -> torch.Tensor:
         """Convert canonical label names into a binary target vector."""
         vector = torch.zeros(len(self.labels))
         for name in label_names:
@@ -126,9 +125,9 @@ class BigEarthNetMultilabelEvaluator:
 
     def evaluate(
         self,
-        predictions: List[str],
-        targets: List[List[str]],
-    ) -> Dict[str, torch.Tensor]:
+        predictions: list[str],
+        targets: list[list[str]],
+    ) -> dict[str, torch.Tensor]:
         """Evaluate prompted BigEarthNet predictions with multilabel metrics."""
         if not predictions:
             zero = torch.tensor(0.0)

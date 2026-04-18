@@ -3,7 +3,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 import bitsandbytes as bnb
 import lightning as L
@@ -38,13 +38,13 @@ class Qwen3VLModule(L.LightningModule):
     def __init__(
         self,
         model_name_or_path: str = "unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit",
-        adapter_dir: Optional[str] = None,
+        adapter_dir: str | None = None,
         max_seq_length: int = 2048,
         lora_r: int = 16,
         lora_alpha: int = 16,
         lora_dropout: float = 0.0,
-        lora_target_modules: Optional[List[str]] = None,
-        modules_to_save: Optional[List[str]] = None,
+        lora_target_modules: list[str] | None = None,
+        modules_to_save: list[str] | None = None,
         finetune_vision_layers: bool = False,
         finetune_language_layers: bool = True,
         finetune_attention_modules: bool = True,
@@ -52,14 +52,14 @@ class Qwen3VLModule(L.LightningModule):
         learning_rate: float = 2e-4,
         weight_decay: float = 0.01,
         warmup_ratio: float = 0.1,
-        max_steps: Optional[int] = None,
+        max_steps: int | None = None,
         max_new_tokens: int = 256,
         val_generate_batches: int = 0,
         loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
-        satclip_checkpoint: Optional[str] = None,
+        satclip_checkpoint: str | None = None,
         satclip_dim: int = 256,
         num_location_tokens: int = 1,
-        test_predictions_path: Optional[str] = None,
+        test_predictions_path: str | None = None,
     ):
         """
         Initialize Qwen3-VL finetuning module.
@@ -131,7 +131,7 @@ class Qwen3VLModule(L.LightningModule):
         self._location_insertion_state = None
 
         # Test prediction accumulator (for saving per-sample predictions to JSON)
-        self._test_predictions: List[Dict[str, Any]] = []
+        self._test_predictions: list[dict[str, Any]] = []
 
         # Captioning metrics (initialized in setup)
         self.val_captioning_metrics = None
@@ -375,7 +375,7 @@ class Qwen3VLModule(L.LightningModule):
 
         return args, kwargs
 
-    def _prepare_model_inputs(self, batch: Dict[str, Any]):
+    def _prepare_model_inputs(self, batch: dict[str, Any]):
         """Strip non-model fields from batch and set up location state for loc_embed mode.
 
         Returns:
@@ -439,7 +439,7 @@ class Qwen3VLModule(L.LightningModule):
         """Forward pass through the model."""
         return self.model(**inputs)
 
-    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
+    def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Training step."""
         batch, _, _, _, _ = self._prepare_model_inputs(batch)
         outputs = self.model(**batch)
@@ -455,7 +455,7 @@ class Qwen3VLModule(L.LightningModule):
             return True
         return batch_idx < self.val_generate_batches
 
-    def _generate_for_batch(self, batch: Dict[str, Any]) -> List[str]:
+    def _generate_for_batch(self, batch: dict[str, Any]) -> list[str]:
         """Run greedy generation on a batch and return decoded predictions."""
         gen_batch = {k: v for k, v in batch.items() if k != "labels"}
         FastVisionModel.for_inference(self.model)
@@ -478,7 +478,7 @@ class Qwen3VLModule(L.LightningModule):
             predictions.append(text)
         return predictions
 
-    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Dict[str, Any]:
+    def validation_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Validation step with loss computation and optional generation metrics."""
         batch, references, _, _, _ = self._prepare_model_inputs(batch)
         with torch.no_grad():
@@ -514,7 +514,7 @@ class Qwen3VLModule(L.LightningModule):
                 self.log(f"val/{name}", value, prog_bar=(name in ("bleu4", "cider")), sync_dist=True)
             self.val_captioning_metrics.reset()
 
-    def test_step(self, batch: Dict[str, Any], batch_idx: int) -> Dict[str, Any]:
+    def test_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Test step — always generates and accumulates captioning metrics."""
         batch, references, image_ids, lat, lon = self._prepare_model_inputs(batch)
         with torch.no_grad():

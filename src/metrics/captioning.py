@@ -1,7 +1,6 @@
 # Captioning metrics: BLEU (1-4), ROUGE-1, ROUGE-2, ROUGE-L, METEOR, CIDEr
 # Uses pycocoevalcap for BLEU/CIDEr, nltk for METEOR, rouge-score for ROUGE variants
 
-from typing import Dict, List
 
 import nltk
 import torch
@@ -30,7 +29,7 @@ class CaptioningMetrics(Metric):
         self.add_state("predictions", default=[], dist_reduce_fx=None)
         self.add_state("references", default=[], dist_reduce_fx=None)
 
-    def update(self, predictions: List[str], references: List[List[str]]) -> None:
+    def update(self, predictions: list[str], references: list[list[str]]) -> None:
         """Accumulate predictions and their multi-reference ground truths.
 
         Args:
@@ -41,7 +40,7 @@ class CaptioningMetrics(Metric):
         self.predictions.extend(predictions)
         self.references.extend(references)
 
-    def _compute_rouge(self) -> Dict[str, float]:
+    def _compute_rouge(self) -> dict[str, float]:
         """Compute ROUGE-1, ROUGE-2, ROUGE-L using rouge-score.
 
         For multi-reference, takes the max F-score across references per example,
@@ -56,7 +55,7 @@ class CaptioningMetrics(Metric):
         sums = {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}
         n = len(self.predictions)
 
-        for pred, refs in zip(self.predictions, self.references):
+        for pred, refs in zip(self.predictions, self.references, strict=True):
             # Max over references for each ROUGE variant
             best = {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}
             for ref in refs:
@@ -86,13 +85,13 @@ class CaptioningMetrics(Metric):
 
         total = 0.0
         n = len(self.predictions)
-        for pred, refs in zip(self.predictions, self.references):
+        for pred, refs in zip(self.predictions, self.references, strict=True):
             tokenized_refs = [ref.split() for ref in refs]
             tokenized_pred = pred.split()
             total += meteor_score(tokenized_refs, tokenized_pred)
         return total / n if n > 0 else 0.0
 
-    def compute(self) -> Dict[str, torch.Tensor]:
+    def compute(self) -> dict[str, torch.Tensor]:
         """Run all scorers on accumulated data."""
         from pycocoevalcap.bleu.bleu import Bleu
         from pycocoevalcap.cider.cider import Cider
@@ -108,7 +107,7 @@ class CaptioningMetrics(Metric):
         # Build COCO-style dicts for pycocoevalcap: {id: [caption, ...]}
         gts = {}
         res = {}
-        for i, (pred, refs) in enumerate(zip(self.predictions, self.references)):
+        for i, (pred, refs) in enumerate(zip(self.predictions, self.references, strict=True)):
             res[i] = [pred]
             gts[i] = [str(r) for r in refs]
 
@@ -116,7 +115,7 @@ class CaptioningMetrics(Metric):
 
         # BLEU 1-4 (pycocoevalcap, corpus-level with multi-reference)
         bleu_scores, _ = Bleu(4).compute_score(gts, res)
-        for name, s in zip(["bleu1", "bleu2", "bleu3", "bleu4"], bleu_scores):
+        for name, s in zip(["bleu1", "bleu2", "bleu3", "bleu4"], bleu_scores, strict=True):
             results[name] = torch.tensor(float(s))
 
         # METEOR (nltk, pure Python — no Java subprocess)

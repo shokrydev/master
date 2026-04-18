@@ -2,8 +2,9 @@
 
 import json
 import random
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Callable, Iterator, Literal, Optional
+from typing import Literal
 
 import lightning as L
 import numpy as np
@@ -50,12 +51,12 @@ class GAIADataset(IterableDataset):
         split: Literal["train", "validation", "test"],
         id_column: str = "id",
         caption_column: str = "captions",
-        system_prompt: Optional[str] = None,
+        system_prompt: str | None = None,
         user_prompt: str = "Describe this image in detail.",
         multi_caption: bool = False,
-        lat_column: Optional[str] = None,
-        lon_column: Optional[str] = None,
-        coordinate_perturbation: Optional[Literal["shuffled", "antipodal"]] = None,
+        lat_column: str | None = None,
+        lon_column: str | None = None,
+        coordinate_perturbation: Literal["shuffled", "antipodal"] | None = None,
         shuffle_samples: bool = False,
     ):
         self.gaia_root = Path(gaia_root)
@@ -133,7 +134,7 @@ class GAIADataset(IterableDataset):
             return json.loads(value.decode("utf-8"))
         raise TypeError(f"Unsupported GAIA shard json payload type: {type(value)!r}")
 
-    def _read_sample_text(self, sample: dict[str, object]) -> Optional[str]:
+    def _read_sample_text(self, sample: dict[str, object]) -> str | None:
         value = sample.get("txt")
         if value is None:
             return None
@@ -152,7 +153,7 @@ class GAIADataset(IterableDataset):
         return image
 
     def _select_caption(
-        self, references: list[str], text_fallback: Optional[str], rng: random.Random
+        self, references: list[str], text_fallback: str | None, rng: random.Random
     ) -> tuple[str, list[str]]:
         if not references and text_fallback:
             references = [text_fallback]
@@ -167,7 +168,7 @@ class GAIADataset(IterableDataset):
         self,
         image: Image.Image,
         sample_json: dict[str, object],
-        text_fallback: Optional[str],
+        text_fallback: str | None,
         rng: random.Random,
     ) -> dict[str, object]:
         image_id = sample_json.get(self.id_column)
@@ -244,14 +245,14 @@ class GAIADataModule(L.LightningDataModule):
         num_workers: int = 4,
         id_column: str = "id",
         caption_column: str = "captions",
-        system_prompt: Optional[str] = None,
+        system_prompt: str | None = None,
         user_prompt: str = "Describe this image in detail.",
         pin_memory: bool = True,
         persistent_workers: bool = True,
         multi_caption: bool = False,
-        lat_column: Optional[str] = None,
-        lon_column: Optional[str] = None,
-        coordinate_perturbation: Optional[Literal["shuffled", "antipodal"]] = None,
+        lat_column: str | None = None,
+        lon_column: str | None = None,
+        coordinate_perturbation: Literal["shuffled", "antipodal"] | None = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -270,11 +271,11 @@ class GAIADataModule(L.LightningDataModule):
         self.lon_column = lon_column
         self.coordinate_perturbation = coordinate_perturbation
 
-        self._collator: Optional[Callable] = None
-        self.train_dataset: Optional[GAIADataset] = None
-        self.val_dataset: Optional[GAIADataset] = None
-        self.test_dataset: Optional[GAIADataset] = None
-        self.predict_dataset: Optional[GAIADataset] = None
+        self._collator: Callable | None = None
+        self.train_dataset: GAIADataset | None = None
+        self.val_dataset: GAIADataset | None = None
+        self.test_dataset: GAIADataset | None = None
+        self.predict_dataset: GAIADataset | None = None
 
     def set_collator(self, collator: Callable):
         self._collator = collator
@@ -299,7 +300,7 @@ class GAIADataModule(L.LightningDataModule):
             shuffle_samples=shuffle_samples,
         )
 
-    def setup(self, stage: Optional[str] = None):
+    def setup(self, stage: str | None = None):
         if stage in ("fit", None):
             self.train_dataset = self._build_dataset("train", shuffle_samples=True)
             self.val_dataset = self._build_dataset("validation", shuffle_samples=False)

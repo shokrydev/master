@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Optional
 
 import lightning as L
 from lightning.pytorch.callbacks import Callback
@@ -19,7 +18,7 @@ class SaveQLoRAAdaptersCallback(Callback):
         self.dirpath = Path(dirpath)
         self.monitor = monitor
         self.mode = mode
-        self.best_score: Optional[float] = None
+        self.best_score: float | None = None
         self._saved_once = False
 
     def _is_better(self, current: float) -> bool:
