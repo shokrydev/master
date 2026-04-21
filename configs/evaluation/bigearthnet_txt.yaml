@@ -1,0 +1,29 @@
+# Path contract scaffold for BigEarthNet.txt secondary evaluation.
+#
+# This defines the external dataset paths cleanly and separately from GAIA.
+# The current Qwen3-VL GAIA evaluation path is not yet adapted to consume
+# BENTxTDataModule batches directly, so this file is preparatory rather than
+# part of the main runnable path today.
+
+paths:
+  output_dir: ${oc.env:EVAL_OUTPUT_DIR,./outputs/eval}
+  adapter_dir: ${oc.env:EVAL_ADAPTER_DIR,""}
+  bigearthnet_v2_lmdb_root: ${oc.env:BIGEARTHNET_V2_LMDB_ROOT,""}
+  bigearthnet_txt_parquet_path: ${oc.env:BIGEARTHNET_TXT_PARQUET_PATH,""}
+
+trainer:
+  default_root_dir: ${paths.output_dir}
+  enable_checkpointing: false
+
+model:
+  init_args:
+    adapter_dir: ${paths.adapter_dir}
+
+data:
+  class_path: src.data_modules.ben_txt_datamodule.BENTxTDataModule
+  init_args:
+    image_lmdb_file: ${paths.bigearthnet_v2_lmdb_root}
+    metadata_file: ${paths.bigearthnet_txt_parquet_path}
+    bands: RGB
+    batch_size: 1
+    num_workers_dataloader: 4
