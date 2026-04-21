@@ -4,12 +4,8 @@ Upstream source:
 https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/blob/main/ben_txt_datamodule.py
 """
 
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Callable
-from typing import Dict
-from typing import Iterable
-from typing import Optional
-from typing import Union
 
 import lmdb
 import numpy as np
@@ -18,7 +14,7 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 from safetensors.numpy import load as safetensor_load
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 try:
     import lightning.pytorch as pl
@@ -35,7 +31,7 @@ _predefined_bandcombinations = {
 }
 
 """
-This file contains band statistics for BigEarthNet v2 (including S1 stats from v1) after 
+This file contains band statistics for BigEarthNet v2 (including S1 stats from v1) after
 interpolating the images to 120x120 with nearest neighbor.
 The statistics are calculated based on the images of the official train split.
 """
@@ -116,12 +112,12 @@ def collate_mixed(batch):
 class BENImageReader:
     def __init__(
             self,
-            image_lmdb_file: Union[str, Path],
-            metadata_file: Union[str, Path],
+            image_lmdb_file: str | Path,
+            metadata_file: str | Path,
             bands: Iterable[str],
             img_size: int = 120,
             upsample_mode: str = "nearest",
-            info_fn: Optional[Callable] = lambda x: x,
+            info_fn: Callable | None = lambda x: x,
     ):
         self.img_size = img_size
         self.upsample_mode = upsample_mode
@@ -130,16 +126,16 @@ class BENImageReader:
         self.env = None
 
         info_fn(f"Using bandorder {self.bands}")
-        self.uses_s1 = any([x in _s1_bandnames for x in self.bands])
-        self.uses_s2 = any([x in _s2_bandnames for x in self.bands])
+        self.uses_s1 = any(x in _s1_bandnames for x in self.bands)
+        self.uses_s2 = any(x in _s2_bandnames for x in self.bands)
 
         metadata = pd.read_parquet(metadata_file)
-        self.mapping = {p: s for p, s in zip(metadata["patch_id"], metadata["s1_name"])}
+        self.mapping = dict(zip(metadata["patch_id"], metadata["s1_name"], strict=True))
         info_fn("S1-S2 mapping created")
 
     def stack_and_interpolate(
             self,
-            data: Dict[str, np.ndarray],
+            data: dict[str, np.ndarray],
     ) -> np.array:
         def _interpolate(img_data):
             if not img_data.shape[-2:] == (self.img_size, self.img_size):
@@ -196,7 +192,7 @@ class BENImageReader:
 class BENTxTDataset(Dataset):
     """
     PyTorch Dataset for BigEarthNet.txt.
-    
+
     This dataset class loads the textual annotations from BigEarthNet.txt toegther with the satellite imagery (Sentinel-1 and Sentinel-2) from the BigEarthNet-v2.0 dataset (converted to LMDB format).
     It supports various filtering options to create custom dataset splits based on textual annotation metadata, such as type or category, or image metadata like country, season, and climate zone.
     """
@@ -204,25 +200,25 @@ class BENTxTDataset(Dataset):
 
     def __init__(
             self,
-            lmdb_file: Union[str, Path],
-            metadata_file: Union[str, Path],
+            lmdb_file: str | Path,
+            metadata_file: str | Path,
             bands: Iterable[str],
             img_size: int = 120,
             upsample_mode: str = "nearest",
-            types: Optional[Iterable[str]] = None,
-            categories: Optional[Iterable[str]] = None,
-            countries: Optional[Iterable[str]] = None,
-            seasons: Optional[Iterable[str]] = None,
-            climate_zones: Optional[Iterable[str]] = None,
-            transform: Optional[Callable] = None,
-            splits: Optional[Iterable[str]] = None,
-            point_token: Optional[str] = None,
-            ref_token: Optional[str] = None,
+            types: Iterable[str] | None = None,
+            categories: Iterable[str] | None = None,
+            countries: Iterable[str] | None = None,
+            seasons: Iterable[str] | None = None,
+            climate_zones: Iterable[str] | None = None,
+            transform: Callable | None = None,
+            splits: Iterable[str] | None = None,
+            point_token: str | None = None,
+            ref_token: str | None = None,
             info_fn: Callable = lambda x: x,
     ):
         """
         Initialize the BigEarthNet.txt Dataset.
-        
+
         Args:
             lmdb_file: Path to the LMDB file containing the BigEarthNet-v2.0 image data.
             metadata_file: Path to the BigEarthNet.txt Parquet file.
@@ -234,7 +230,7 @@ class BENTxTDataset(Dataset):
             categories: Optional filter for annotation categories. See [here](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/sql-console/8okbuKf) for possible type-category combinations or retrieve them by yourself using some kind of database tool on the Parquet file.
             countries: Optional filter for acquisition countries (e.g., 'Austria', 'Belgium', 'Finland', 'Ireland', 'Kosovo', 'Lithuania', 'Luxembourg', 'Portugal', 'Serbia', 'Switzerland').
             seasons: Optional filter for seasons (e.g., 'Spring', 'Summer', 'Fall', 'Winter').
-            climate_zones: Optional filter for climate zones. See [here](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/sql-console/3xLT8_u) for possible climate_zones values or retrieve them by yourself using some kind of database tool on the Parquet file. 
+            climate_zones: Optional filter for climate zones. See [here](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/sql-console/3xLT8_u) for possible climate_zones values or retrieve them by yourself using some kind of database tool on the Parquet file.
             transform: Optional torchvision transform to apply to images.
             splits: Optional filter for dataset splits ('train', 'validation', 'test', 'bench').
             point_token: Optional tuple of [start_token, end_token] to wrap <point> tags in text.
@@ -242,7 +238,7 @@ class BENTxTDataset(Dataset):
             info_fn: Optional callback function for logging information during initialization.
         """
         super().__init__()
-        
+
         if isinstance(bands, str):
             assert bands in _predefined_bandcombinations, f"{bands} not in predefined options: {_predefined_bandcombinations.keys()}"
             bands = _predefined_bandcombinations[bands]
@@ -290,10 +286,10 @@ class BENTxTDataset(Dataset):
     def __getitem__(self, idx):
         """
         Get a sample from the dataset.
-        
+
         Args:
             idx: Index of the sample to retrieve.
-        
+
         Returns:
             dict: A dictionary containing:
                 - 'image_input': Tensor of shape (num_bands, img_size, img_size) containing the stacked bands, applying image transformations if transform is provided.
@@ -324,18 +320,18 @@ class BENTxTDataset(Dataset):
 class BENTxTDataModule(pl.LightningDataModule):
     """
     PyTorch Lightning DataModule for BigEarthNet.txt.
-    
-    This DataModule provides a structured interface for loading and preprocessing BigEarthNet.txt 
-    data for use with PyTorch Lightning training loops. It automatically handles train, 
-    validation, test, and benchmark dataset splits, with proper train/eval transforms and 
+
+    This DataModule provides a structured interface for loading and preprocessing BigEarthNet.txt
+    data for use with PyTorch Lightning training loops. It automatically handles train,
+    validation, test, and benchmark dataset splits, with proper train/eval transforms and
     DataLoader configuration.
-    
+
     The module manages:
     - Automatic dataset setup for different training stages
     - Image preprocessing and normalization based on selected bands
     - DataLoader creation with appropriate batch sizes and worker processes
     - GPU pinning when CUDA is available
-    
+
     Attributes:
         train_ds (BENTxTDataset): Training dataset instance.
         val_ds (BENTxTDataset): Validation dataset instance.
@@ -349,27 +345,27 @@ class BENTxTDataModule(pl.LightningDataModule):
 
     def __init__(
             self,
-            image_lmdb_file: Union[str, Path],
-            metadata_file: Union[str, Path],
-            bands: Optional[Union[Iterable[str], str]] = None,
+            image_lmdb_file: str | Path,
+            metadata_file: str | Path,
+            bands: Iterable[str] | str | None = None,
             img_size: int = 120,
             upsample_mode: str = "nearest",
-            types: Optional[Iterable[str]] = None,
-            categories: Optional[Iterable[str]] = None,
-            countries: Optional[Iterable[str]] = None,
-            seasons: Optional[Iterable[str]] = None,
-            climate_zones: Optional[Iterable[str]] = None,
-            num_workers_dataloader: Optional[int] = 4,
-            batch_size: Optional[int] = 16,
-            image_transforms_train: Optional[Callable] = None,
-            image_transforms_eval: Optional[Callable] = None,
+            types: Iterable[str] | None = None,
+            categories: Iterable[str] | None = None,
+            countries: Iterable[str] | None = None,
+            seasons: Iterable[str] | None = None,
+            climate_zones: Iterable[str] | None = None,
+            num_workers_dataloader: int | None = 4,
+            batch_size: int | None = 16,
+            image_transforms_train: Callable | None = None,
+            image_transforms_eval: Callable | None = None,
             point_token: Iterable[str] = None,
             ref_token: Iterable[str] = None,
-            info_fn: Optional[Callable] = lambda x: x,
+            info_fn: Callable | None = lambda x: x,
     ):
         """
         Initialize the BigEarthNet.txt DataModule.
-        
+
         Args:
             lmdb_file: Path to the LMDB file containing the BigEarthNet-v2.0 image data.
             metadata_file: Path to the BigEarthNet.txt Parquet file.
@@ -381,7 +377,7 @@ class BENTxTDataModule(pl.LightningDataModule):
             categories: Optional filter for annotation categories. See [here](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/sql-console/KzrmYgF) for possible type-category combinations or retrieve them by yourself using some kind of database tool on the Parquet file.
             countries: Optional filter for acquisition countries (e.g., 'Austria', 'Belgium', 'Finland', 'Ireland', 'Kosovo', 'Lithuania', 'Luxembourg', 'Portugal', 'Serbia', 'Switzerland').
             seasons: Optional filter for seasons (e.g., 'Spring', 'Summer', 'Fall', 'Winter').
-            climate_zones: Optional filter for climate zones. See [here](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/sql-console/SUU1DwA) for possible climate_zones values or retrieve them by yourself using some kind of database tool on the Parquet file. 
+            climate_zones: Optional filter for climate zones. See [here](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/sql-console/SUU1DwA) for possible climate_zones values or retrieve them by yourself using some kind of database tool on the Parquet file.
             transform: Optional torchvision transform to apply to images.
             num_workers_dataloader: Number of worker processes for DataLoaders (default: 4).
                 Set to 0 to disable multiprocessing.
@@ -432,12 +428,12 @@ class BENTxTDataModule(pl.LightningDataModule):
         self.train_transforms = image_transforms_train if image_transforms_train is not None else default_train_transform(img_size, mean=self.mean, std=self.std)
         self.eval_transforms = image_transforms_eval if image_transforms_eval is not None else default_transform(img_size, mean=self.mean, std=self.std)
 
-    def setup(self, stage: Optional[str] = None) -> None:
+    def setup(self, stage: str | None = None) -> None:
         """
         Create train/val/test/bench datasets based on the specified stage.
-        
+
         This method is called by PyTorch Lightning during trainer initialization.
-        
+
         Args:
             stage: The training stage - one of 'fit', 'test', 'bench', or None. If None,
                 all datasets are created. Default: None.
