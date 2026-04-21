@@ -182,19 +182,17 @@ class PrepareModelInputsTest(unittest.TestCase):
             "labels": torch.tensor([[11, 12, 13, 14, 15], [21, 22, 23, 24, 25]]),
             "lat": torch.tensor([52.5, -33.9], dtype=torch.float64),
             "lon": torch.tensor([13.4, 151.2], dtype=torch.float64),
-            "references": [["a"], ["b"]],
-            "image_ids": ["img1", "img2"],
+            "target_texts": [["a"], ["b"]],
         }
 
-        model_batch, references, image_ids, lat, lon = module._prepare_model_inputs(batch)
+        model_batch, target_texts, lat, lon = module._prepare_model_inputs(batch)
 
         expected_labels = torch.tensor(
             [[11, 12, -100, -100, 13, 14, 15], [21, -100, -100, 22, 23, 24, 25]]
         )
         self.assertTrue(torch.equal(model_batch["labels"], expected_labels))
         self.assertEqual(module._location_insertion_state["insert_positions"].tolist(), [2, 1])
-        self.assertEqual(references, [["a"], ["b"]])
-        self.assertEqual(image_ids, ["img1", "img2"])
+        self.assertEqual(target_texts, [["a"], ["b"]])
         self.assertTrue(torch.equal(lat, torch.tensor([52.5, -33.9], dtype=torch.float64)))
         self.assertTrue(torch.equal(lon, torch.tensor([13.4, 151.2], dtype=torch.float64)))
 
@@ -208,7 +206,7 @@ class PrepareModelInputsTest(unittest.TestCase):
             "lon": torch.tensor([2.0], dtype=torch.float64),
         }
 
-        model_batch, _, _, _, _ = module._prepare_model_inputs(batch)
+        model_batch, _, _, _ = module._prepare_model_inputs(batch)
 
         expected_labels = torch.tensor([[11, 12, 13, -100, -100, -100]])
         self.assertTrue(torch.equal(model_batch["labels"], expected_labels))
@@ -227,16 +225,14 @@ class PrepareModelInputsTest(unittest.TestCase):
             "labels": torch.tensor([[11, 12, 13]]),
             "lat": torch.tensor([1.0], dtype=torch.float64),
             "lon": torch.tensor([2.0], dtype=torch.float64),
-            "references": [["ref"]],
-            "image_ids": ["img"],
+            "target_texts": [["ref"]],
         }
 
-        model_batch, references, image_ids, lat, lon = module._prepare_model_inputs(batch)
+        model_batch, target_texts, lat, lon = module._prepare_model_inputs(batch)
 
         self.assertTrue(torch.equal(model_batch["labels"], torch.tensor([[11, 12, 13]])))
         self.assertIsNone(module._location_insertion_state)
-        self.assertEqual(references, [["ref"]])
-        self.assertEqual(image_ids, ["img"])
+        self.assertEqual(target_texts, [["ref"]])
         self.assertTrue(torch.equal(lat, torch.tensor([1.0], dtype=torch.float64)))
         self.assertTrue(torch.equal(lon, torch.tensor([2.0], dtype=torch.float64)))
 

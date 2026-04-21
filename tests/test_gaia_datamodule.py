@@ -96,14 +96,16 @@ class TestGAIADataModule(unittest.TestCase):
         train_item = next(iter(dm.train_dataset))
         val_item = next(iter(dm.val_dataset))
 
-        self.assertEqual(train_item["image_id"], "train-sample")
-        self.assertEqual(train_item["references"], ["train a", "train b"])
+        self.assertIn(train_item["target_texts"][0], {"train a", "train b"})
+        self.assertCountEqual(train_item["target_texts"], ["train a", "train b"])
         self.assertEqual(train_item["lat"], 10.5)
         self.assertEqual(train_item["lon"], 20.5)
-        self.assertIn("Describe at 10.5, 20.5.", train_item["messages"][1]["content"][0]["text"])
+        self.assertIn("Describe at 10.5, 20.5.", train_item["input_text"])
+        self.assertIn("system", train_item["input_text"])
+        self.assertIn("image", train_item)
 
-        self.assertEqual(val_item["image_id"], "val-sample")
-        self.assertEqual(val_item["references"], ["val a", "val b"])
+        self.assertIn(val_item["target_texts"][0], {"val a", "val b"})
+        self.assertCountEqual(val_item["target_texts"], ["val a", "val b"])
 
     def test_train_dataloader_preserves_model_facing_batch_shape(self) -> None:
         dm = self._make_datamodule()
@@ -113,9 +115,11 @@ class TestGAIADataModule(unittest.TestCase):
         batch = list(dm.train_dataloader())[0]
 
         self.assertEqual(len(batch), 1)
-        self.assertIn("messages", batch[0])
-        self.assertIn("references", batch[0])
-        self.assertIn("image_id", batch[0])
+        self.assertIn("image", batch[0])
+        self.assertIn("input_text", batch[0])
+        self.assertIn("target_texts", batch[0])
+        self.assertIn("lat", batch[0])
+        self.assertIn("lon", batch[0])
 
     def test_test_stage_requires_local_test_split_files(self) -> None:
         dm = self._make_datamodule()

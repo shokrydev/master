@@ -376,16 +376,10 @@ class Qwen3VLModule(L.LightningModule):
         return args, kwargs
 
     def _prepare_model_inputs(self, batch: dict[str, Any]):
-        """Strip non-model fields from batch and set up location state for loc_embed mode.
-
-        Returns:
-            Tuple of (batch, references, image_ids, lat, lon) where the last three
-            may be None. lat/lon are raw tensors (not moved to device yet).
-        """
+        """Strip non-model fields from batch and set up location state for loc_embed mode."""
         lat = batch.pop("lat", None)
         lon = batch.pop("lon", None)
-        references = batch.pop("references", None)
-        image_ids = batch.pop("image_ids", None)
+        target_texts = batch.pop("target_texts", None)
 
         if self.loc_mode == "loc_embed":
             if lat is None or lon is None:
@@ -425,7 +419,7 @@ class Qwen3VLModule(L.LightningModule):
                 )
                 batch["labels"] = self._insert_tokens_2d(batch["labels"], ignore, insert_positions)
 
-        return batch, references, image_ids, lat, lon
+        return batch, target_texts, lat, lon
 
     def _set_datamodule_collator(self):
         """Attach the collator to the active datamodule once it exists."""
@@ -480,7 +474,7 @@ class Qwen3VLModule(L.LightningModule):
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Validation step with loss computation and optional generation metrics."""
-        batch, references, _, _, _ = self._prepare_model_inputs(batch)
+        batch, target_texts, _, _ = self._prepare_model_inputs(batch)
         with torch.no_grad():
             outputs = self.model(**batch)
 
@@ -496,8 +490,8 @@ class Qwen3VLModule(L.LightningModule):
                     self.print(f"\n[Val Sample] Generated: {predictions[0][:500]}...")
 
                 # Accumulate for captioning metrics
-                if self.val_captioning_metrics is not None and references is not None:
-                    self.val_captioning_metrics.update(predictions, references)
+                if self.val_captioning_metrics is not None and target_texts is not None:
+                    self.val_captioning_metrics.update(predictions, target_texts)
 
                 result["generated"] = predictions[0] if predictions else ""
             except Exception as e:
@@ -516,7 +510,7 @@ class Qwen3VLModule(L.LightningModule):
 
     def test_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Test step — always generates and accumulates captioning metrics."""
-        batch, references, image_ids, lat, lon = self._prepare_model_inputs(batch)
+        batch, target_texts, lat, lon = self._prepare_model_inputs(batch)
         with torch.no_grad():
             outputs = self.model(**batch)
 
@@ -530,16 +524,15 @@ class Qwen3VLModule(L.LightningModule):
                 if batch_idx == 0 and predictions:
                     self.print(f"\n[Test Sample] Generated: {predictions[0][:500]}...")
 
-                if self.test_captioning_metrics is not None and references is not None:
-                    self.test_captioning_metrics.update(predictions, references)
+                if self.test_captioning_metrics is not None and target_texts is not None:
+                    self.test_captioning_metrics.update(predictions, target_texts)
 
                 # Accumulate per-sample predictions for JSON export
-                if self.test_predictions_path and image_ids is not None:
+                if self.test_predictions_path:
                     for i, pred in enumerate(predictions):
                         entry = {
-                            "image_id": image_ids[i],
                             "prediction": pred,
-                            "references": references[i] if references else [],
+                            "target_texts": target_texts[i] if target_texts else [],
                         }
                         if lat is not None:
                             entry["lat"] = float(lat[i])

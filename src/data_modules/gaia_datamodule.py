@@ -42,6 +42,26 @@ def _normalize_captions(value: object) -> list[str]:
     return [str(value)]
 
 
+def _build_target_texts(
+    references: list[str], *, multi_caption: bool, rng: random.Random
+) -> list[str]:
+    """Return target texts with the first entry used as supervised target.
+
+    For multi-caption mode we randomize which caption appears first, while still
+    keeping the full set available for multi-reference evaluation.
+    """
+    if not references:
+        raise ValueError("No caption references available")
+
+    if not multi_caption or len(references) == 1:
+        return [references[0]]
+
+    targets = list(references)
+    selected_idx = rng.randrange(len(targets))
+    targets[0], targets[selected_idx] = targets[selected_idx], targets[0]
+    return targets
+
+
 class GAIADataset(IterableDataset):
     """Iterable dataset for the official shard-based GAIA layout."""
 
@@ -92,7 +112,10 @@ class GAIADataset(IterableDataset):
         if self.caption_column not in self.metadata.columns:
             raise KeyError(f"Expected caption column '{self.caption_column}' in {self.manifest_path}")
 
-        if coordinate_perturbation and lat_column and lon_column:
+        if not lat_column or not lon_column:
+            raise ValueError("GAIADataset requires both lat_column and lon_column")
+
+        if coordinate_perturbation:
             if coordinate_perturbation == "shuffled":
                 rng = np.random.RandomState(42)
                 perm = rng.permutation(len(self.metadata))
@@ -152,17 +175,12 @@ class GAIADataset(IterableDataset):
             image = image.convert("RGB")
         return image
 
-    def _select_caption(
-        self, references: list[str], text_fallback: str | None, rng: random.Random
-    ) -> tuple[str, list[str]]:
+    def _select_targets(self, references: list[str], text_fallback: str | None, rng: random.Random) -> list[str]:
         if not references and text_fallback:
             references = [text_fallback]
         if not references:
             raise ValueError(f"No caption references available for GAIA split '{self.split}'")
-
-        if self.multi_caption:
-            return rng.choice(references), references
-        return references[0], [references[0]]
+        return _build_target_texts(references, multi_caption=self.multi_caption, rng=rng)
 
     def _build_item(
         self,
@@ -171,57 +189,42 @@ class GAIADataset(IterableDataset):
         text_fallback: str | None,
         rng: random.Random,
     ) -> dict[str, object]:
-        image_id = sample_json.get(self.id_column)
-        if image_id is None:
+        sample_id = sample_json.get(self.id_column)
+        if sample_id is None:
             raise KeyError(
                 f"GAIA shard sample is missing id column '{self.id_column}' in its JSON sidecar"
             )
 
-        row = self._metadata_by_id.get(image_id)
+        row = self._metadata_by_id.get(sample_id)
         if row is None:
-            raise KeyError(f"Image id '{image_id}' not found in GAIA manifest {self.manifest_path}")
+            raise KeyError(f"Image id '{sample_id}' not found in GAIA manifest {self.manifest_path}")
 
         references = _normalize_captions(row.get(self.caption_column))
-        caption, references = self._select_caption(references, text_fallback, rng)
+        target_texts = self._select_targets(references, text_fallback, rng)
 
         user_prompt = self.user_prompt
-        lat, lon = None, None
-        if self.lat_column and self.lon_column:
-            lat_value = row.get(self.lat_column)
-            lon_value = row.get(self.lon_column)
-            if lat_value is not None and lon_value is not None:
-                lat = float(lat_value)
-                lon = float(lon_value)
-                user_prompt = user_prompt.format(lat=lat, lon=lon)
+        lat_value = row.get(self.lat_column)
+        lon_value = row.get(self.lon_column)
+        if lat_value is None or lon_value is None:
+            raise ValueError(
+                f"GAIA sample '{sample_id}' is missing required coordinates "
+                f"('{self.lat_column}', '{self.lon_column}')"
+            )
+        lat = float(lat_value)
+        lon = float(lon_value)
 
-        messages = []
+        user_prompt = user_prompt.format(lat=lat, lon=lon)
         if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
-        messages.append(
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_prompt},
-                    {"type": "image", "image": image},
-                ],
-            }
-        )
-        messages.append(
-            {
-                "role": "assistant",
-                "content": [{"type": "text", "text": caption}],
-            }
-        )
+            # Keep the configured system instruction while using the normalized schema.
+            user_prompt = f"{self.system_prompt}\n\n{user_prompt}"
 
-        item: dict[str, object] = {
-            "messages": messages,
-            "image_id": image_id,
-            "references": references,
+        return {
+            "image": image,
+            "input_text": user_prompt,
+            "target_texts": target_texts,
+            "lat": lat,
+            "lon": lon,
         }
-        if lat is not None and lon is not None:
-            item["lat"] = lat
-            item["lon"] = lon
-        return item
 
     def __iter__(self) -> Iterator[dict[str, object]]:
         worker_info = get_worker_info()

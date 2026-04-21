@@ -4,51 +4,74 @@ import torch
 
 
 class GeoAwareCollator:
-    """Wraps an inner collator (e.g. UnslothVisionDataCollator) to handle geo fields.
+    """Wraps the Unsloth vision collator for normalized samples.
 
-    Before inner collation: strips lat, lon, image_id from items (the inner
-    collator only understands 'messages').
-    After inner collation: re-attaches GAIA metadata needed later in the
-    pipeline. `references` and `image_ids` are preserved for evaluation in all
-    conditions. `lat` / `lon` are only attached when `include_coordinates=True`,
-    which is the path used by location-conditioned runs including SatCLIP
-    `loc_embed`.
+    Input sample schema:
+      - image
+      - input_text
+      - target_texts
+      - lat
+      - lon
+
+    The inner Unsloth collator expects chat-style `messages`, so this wrapper
+    constructs those messages and re-attaches metadata needed later in the
+    model/evaluation path.
     """
 
     def __init__(self, inner_collator, include_coordinates: bool = False):
         self.inner_collator = inner_collator
         self.include_coordinates = include_coordinates
 
+    @staticmethod
+    def _to_messages(image: Any, input_text: str, target_text: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": input_text},
+                    {"type": "image", "image": image},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": target_text}],
+            },
+        ]
+
     def __call__(self, items: list[dict[str, Any]]) -> dict[str, Any]:
-        # Strip extra fields before passing to inner collator
-        lats, lons, image_ids, references = [], [], [], []
+        # Convert normalized samples to the message format expected by Unsloth.
+        lats, lons, target_texts_batch = [], [], []
         cleaned = []
         for item in items:
-            item = dict(item)  # shallow copy
-            image_ids.append(item.pop("image_id", None))
-            references.append(item.pop("references", None))
-            if self.include_coordinates:
-                lats.append(item.pop("lat", None))
-                lons.append(item.pop("lon", None))
-            else:
-                item.pop("lat", None)
-                item.pop("lon", None)
-            cleaned.append(item)
+            image = item["image"]
+            input_text = str(item["input_text"])
+            targets = [str(t) for t in item["target_texts"]]
+            if not targets:
+                raise ValueError("Each sample must contain at least one target text")
 
-        # Inner collation (produces input_ids, attention_mask, labels, pixel_values, etc.)
+            lat = item["lat"]
+            lon = item["lon"]
+            assert isinstance(lat, float), (
+                f"Expected 'lat' to be float in normalized sample, got {type(lat).__name__}: {lat!r}"
+            )
+            assert isinstance(lon, float), (
+                f"Expected 'lon' to be float in normalized sample, got {type(lon).__name__}: {lon!r}"
+            )
+            lats.append(lat)
+            lons.append(lon)
+            target_texts_batch.append(targets)
+
+            cleaned.append({"messages": self._to_messages(image, input_text, targets[0])})
+
+        # Inner collation (input_ids, attention_mask, labels, pixel_values, ...)
         batch = self.inner_collator(cleaned)
 
-        # Re-attach geo tensors
-        if self.include_coordinates and lats and lats[0] is not None:
+        # Re-attach geo tensors (always present in normalized schema).
+        if self.include_coordinates:
             batch["lat"] = torch.tensor(lats, dtype=torch.float64)
             batch["lon"] = torch.tensor(lons, dtype=torch.float64)
 
-        # Re-attach references (list of lists of strings, not tensorized)
-        if references and references[0] is not None:
-            batch["references"] = references
-
-        # Re-attach image_ids (list of strings, not tensorized)
-        if image_ids and image_ids[0] is not None:
-            batch["image_ids"] = image_ids
+        # Keep full targets for multi-reference evaluation.
+        batch["target_texts"] = target_texts_batch
 
         return batch
