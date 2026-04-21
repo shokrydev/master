@@ -295,6 +295,8 @@ class BENTxTDataset(Dataset):
                 - 'image_input': Tensor of shape (num_bands, img_size, img_size) containing the stacked bands, applying image transformations if transform is provided.
                 - 'text_input': String containing the text query/caption with tokens replaced based on point_token and ref_token settings.
                 - 'reference_output': The expected output/answer for the given input.
+                - 'latitude': Latitude of the patch center.
+                - 'longitude': Longitude of the patch center.
         """
         sample = self.text_data.iloc[idx]
         img_id = sample.patch_id
@@ -314,6 +316,8 @@ class BENTxTDataset(Dataset):
             "image_input": img_data,
             "text_input": text_in,
             "reference_output": output,
+            "latitude": float(sample.latitude),
+            "longitude": float(sample.longitude),
         }
 
 
