@@ -71,7 +71,6 @@ class GAIADataset(IterableDataset):
         split: Literal["train", "validation", "test"],
         id_column: str = "id",
         caption_column: str = "captions",
-        system_prompt: str | None = None,
         user_prompt: str = "Describe this image in detail.",
         multi_caption: bool = False,
         lat_column: str | None = None,
@@ -83,7 +82,6 @@ class GAIADataset(IterableDataset):
         self.split = split
         self.id_column = id_column
         self.caption_column = caption_column
-        self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         self.multi_caption = multi_caption
         self.lat_column = lat_column
@@ -214,9 +212,6 @@ class GAIADataset(IterableDataset):
         lon = float(lon_value)
 
         user_prompt = user_prompt.format(lat=lat, lon=lon)
-        if self.system_prompt:
-            # Keep the configured system instruction while using the normalized schema.
-            user_prompt = f"{self.system_prompt}\n\n{user_prompt}"
 
         return {
             "image": image,
@@ -248,7 +243,6 @@ class GAIADataModule(L.LightningDataModule):
         num_workers: int = 4,
         id_column: str = "id",
         caption_column: str = "captions",
-        system_prompt: str | None = None,
         user_prompt: str = "Describe this image in detail.",
         pin_memory: bool = True,
         persistent_workers: bool = True,
@@ -265,7 +259,6 @@ class GAIADataModule(L.LightningDataModule):
         self.num_workers = num_workers
         self.id_column = id_column
         self.caption_column = caption_column
-        self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         self.pin_memory = pin_memory
         self.persistent_workers = persistent_workers and num_workers > 0
@@ -294,7 +287,6 @@ class GAIADataModule(L.LightningDataModule):
             split=split,
             id_column=self.id_column,
             caption_column=self.caption_column,
-            system_prompt=self.system_prompt,
             user_prompt=self.user_prompt,
             multi_caption=self.multi_caption,
             lat_column=self.lat_column,

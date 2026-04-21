@@ -55,6 +55,7 @@ class Qwen3VLModule(L.LightningModule):
         max_steps: int | None = None,
         max_new_tokens: int = 256,
         val_generate_batches: int = 0,
+        system_prompt: str | None = "You are a remote sensing image analysis assistant.",
         loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
         satclip_checkpoint: str | None = None,
         satclip_dim: int = 256,
@@ -86,6 +87,7 @@ class Qwen3VLModule(L.LightningModule):
             max_new_tokens: Max tokens to generate during validation
             val_generate_batches: How many val batches to run generation on
                 (0 = no generation metrics, -1 = all batches). Test always generates.
+            system_prompt: Optional system message injected during chat formatting.
             loc_mode: Location conditioning mode ("no_loc", "loc_text", "loc_embed")
             satclip_checkpoint: Path to SatCLIP checkpoint (required for encoder mode)
             satclip_dim: SatCLIP embedding dimension
@@ -114,6 +116,7 @@ class Qwen3VLModule(L.LightningModule):
         self.max_steps = max_steps
         self.max_new_tokens = max_new_tokens
         self.val_generate_batches = val_generate_batches
+        self.system_prompt = system_prompt
         self.loc_mode = loc_mode
         self.satclip_checkpoint = satclip_checkpoint
         self.satclip_dim = satclip_dim
@@ -187,7 +190,9 @@ class Qwen3VLModule(L.LightningModule):
         # Wrap collator with GeoAwareCollator
         base_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
         self._collator = GeoAwareCollator(
-            base_collator, include_coordinates=self.loc_mode in {"loc_text", "loc_embed"}
+            base_collator,
+            include_coordinates=self.loc_mode in {"loc_text", "loc_embed"},
+            system_prompt=self.system_prompt,
         )
         self._set_datamodule_collator()
 

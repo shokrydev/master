@@ -79,6 +79,7 @@ model:
 
     max_new_tokens: 256
     val_generate_batches: 0
+    system_prompt: You are a remote sensing image analysis assistant.
 
     loc_mode: no_loc
 
@@ -99,5 +100,4 @@ data:
     lat_column: lat
     lon_column: lon
 
-    system_prompt: You are a remote sensing image analysis assistant.
     user_prompt: Describe this remote sensing image in detail.

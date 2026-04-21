@@ -83,7 +83,6 @@ class TestGAIADataModule(unittest.TestCase):
             multi_caption=True,
             lat_column="lat",
             lon_column="lon",
-            system_prompt="system",
             user_prompt="Describe at {lat:.1f}, {lon:.1f}.",
             pin_memory=False,
             persistent_workers=False,
@@ -101,7 +100,6 @@ class TestGAIADataModule(unittest.TestCase):
         self.assertEqual(train_item["lat"], 10.5)
         self.assertEqual(train_item["lon"], 20.5)
         self.assertIn("Describe at 10.5, 20.5.", train_item["input_text"])
-        self.assertIn("system", train_item["input_text"])
         self.assertIn("image", train_item)
 
         self.assertIn(val_item["target_texts"][0], {"val a", "val b"})

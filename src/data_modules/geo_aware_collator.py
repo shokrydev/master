@@ -18,13 +18,21 @@ class GeoAwareCollator:
     model/evaluation path.
     """
 
-    def __init__(self, inner_collator, include_coordinates: bool = False):
+    def __init__(
+        self,
+        inner_collator,
+        include_coordinates: bool = False,
+        system_prompt: str | None = None,
+    ):
         self.inner_collator = inner_collator
         self.include_coordinates = include_coordinates
+        self.system_prompt = system_prompt
 
-    @staticmethod
-    def _to_messages(image: Any, input_text: str, target_text: str) -> list[dict[str, Any]]:
-        return [
+    def _to_messages(self, image: Any, input_text: str, target_text: str) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        messages.extend([
             {
                 "role": "user",
                 "content": [
@@ -36,7 +44,8 @@ class GeoAwareCollator:
                 "role": "assistant",
                 "content": [{"type": "text", "text": target_text}],
             },
-        ]
+        ])
+        return messages
 
     def __call__(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         # Convert normalized samples to the message format expected by Unsloth.
