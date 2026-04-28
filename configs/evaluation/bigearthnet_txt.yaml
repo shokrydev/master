@@ -1,9 +1,7 @@
-# Path contract scaffold for BigEarthNet.txt secondary evaluation.
+# Path contract for BigEarthNet.txt secondary evaluation.
 #
-# This defines the external dataset paths cleanly and separately from GAIA.
-# The current Qwen3-VL GAIA evaluation path is not yet adapted to consume
-# BENTxTDataModule batches directly, so this file is preparatory rather than
-# part of the main runnable path today.
+# This keeps the external BigEarthNet paths separate from GAIA while reusing
+# the same shared sample schema and collator/model path.
 
 paths:
   output_dir: ${oc.env:EVAL_OUTPUT_DIR,./outputs/eval}
