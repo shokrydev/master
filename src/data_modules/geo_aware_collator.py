@@ -12,6 +12,8 @@ class GeoAwareCollator:
       - target_texts
       - lat
       - lon
+      - multispectral (optional)
+      - multispectral_bands (optional)
 
     The inner Unsloth collator expects chat-style `messages`, so this wrapper
     constructs those messages and re-attaches metadata needed later in the
@@ -50,6 +52,12 @@ class GeoAwareCollator:
     def __call__(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         # Convert normalized samples to the message format expected by Unsloth.
         lats, lons, target_texts_batch = [], [], []
+        multispectral_images = []
+        multispectral_bands = []
+        has_multispectral = ["multispectral" in item for item in items]
+        if any(has_multispectral) and not all(has_multispectral):
+            raise ValueError("Either every sample or no sample must include 'multispectral'")
+
         cleaned = []
         for item in items:
             image = item["image"]
@@ -69,6 +77,15 @@ class GeoAwareCollator:
             lats.append(lat)
             lons.append(lon)
             target_texts_batch.append(targets)
+            if has_multispectral[0]:
+                multispectral = item["multispectral"]
+                if not isinstance(multispectral, torch.Tensor):
+                    raise TypeError(
+                        "Expected 'multispectral' to be a torch.Tensor in normalized sample, "
+                        f"got {type(multispectral).__name__}"
+                    )
+                multispectral_images.append(multispectral)
+                multispectral_bands.append(item.get("multispectral_bands"))
 
             cleaned.append({"messages": self._to_messages(image, input_text, targets[0])})
 
@@ -82,5 +99,12 @@ class GeoAwareCollator:
 
         # Keep full targets for multi-reference evaluation.
         batch["target_texts"] = target_texts_batch
+        if multispectral_images:
+            batch["multispectral"] = torch.stack(multispectral_images, dim=0)
+            if any(bands is not None for bands in multispectral_bands):
+                if all(bands == multispectral_bands[0] for bands in multispectral_bands):
+                    batch["multispectral_bands"] = multispectral_bands[0]
+                else:
+                    batch["multispectral_bands"] = multispectral_bands
 
         return batch

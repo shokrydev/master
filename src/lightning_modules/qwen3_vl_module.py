@@ -385,6 +385,8 @@ class Qwen3VLModule(L.LightningModule):
         lat = batch.pop("lat", None)
         lon = batch.pop("lon", None)
         target_texts = batch.pop("target_texts", None)
+        batch.pop("multispectral", None)
+        batch.pop("multispectral_bands", None)
 
         if self.loc_mode == "loc_embed":
             if lat is None or lon is None:

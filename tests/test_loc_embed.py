@@ -226,11 +226,15 @@ class PrepareModelInputsTest(unittest.TestCase):
             "lat": torch.tensor([1.0], dtype=torch.float64),
             "lon": torch.tensor([2.0], dtype=torch.float64),
             "target_texts": [["ref"]],
+            "multispectral": torch.ones(1, 3, 2, 2),
+            "multispectral_bands": ["B04", "B03", "B02"],
         }
 
         model_batch, target_texts, lat, lon = module._prepare_model_inputs(batch)
 
         self.assertTrue(torch.equal(model_batch["labels"], torch.tensor([[11, 12, 13]])))
+        self.assertNotIn("multispectral", model_batch)
+        self.assertNotIn("multispectral_bands", model_batch)
         self.assertIsNone(module._location_insertion_state)
         self.assertEqual(target_texts, [["ref"]])
         self.assertTrue(torch.equal(lat, torch.tensor([1.0], dtype=torch.float64)))
