@@ -6,6 +6,7 @@ https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/blob/main
 
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import Literal
 
 import lmdb
 import numpy as np
@@ -30,6 +31,9 @@ _predefined_bandcombinations = {
     "all":  _s1_bandnames + _s2_bandnames,
 }
 _rgb_band_order = ["B04", "B03", "B02"]
+RGBRenderMode = Literal["copernicus", "quantile"]
+_copernicus_rgb_scale = 3558.0
+_default_rgb_quantile = 0.90
 
 """
 Band statistics for BigEarthNet v2 (including S1 stats from v1) after
@@ -155,21 +159,34 @@ def collate_normalized(batch):
     return collated
 
 
-def _sentinel2_rgb_tensor_to_pil(image_tensor: torch.Tensor) -> Image.Image:
+def _sentinel2_rgb_tensor_to_pil(
+    image_tensor: torch.Tensor,
+    *,
+    rgb_render_mode: RGBRenderMode = "copernicus",
+    rgb_quantile: float = _default_rgb_quantile,
+) -> Image.Image:
     """Render raw Sentinel-2 RGB bands into a deterministic PIL image.
 
     BigEarthNet reflectance values are not stored as byte RGB images. For the
-    shared Qwen/Unsloth path we apply a fixed 0..3000 stretch so the dataset
-    emits an actual RGB image rather than classifier-style normalized tensors.
+    shared Qwen/Unsloth path we emit an actual RGB image rather than
+    classifier-style normalized tensors.
     """
     if image_tensor.ndim != 3 or image_tensor.shape[0] != 3:
         raise ValueError(
             "Expected Sentinel-2 RGB tensor with shape (3, H, W) for VLM image rendering"
         )
+    if rgb_render_mode == "copernicus":
+        digital = (image_tensor / _copernicus_rgb_scale) * 255.0
+    elif rgb_render_mode == "quantile":
+        scale = image_tensor.quantile(rgb_quantile)
+        if not bool(torch.isfinite(scale).item()) or float(scale.item()) <= 0.0:
+            scale = image_tensor.new_tensor(_copernicus_rgb_scale)
+        digital = (image_tensor / scale) * 255.0
+    else:
+        raise ValueError(f"Unsupported RGB render mode: {rgb_render_mode}")
 
-    image_array = image_tensor.detach().cpu().numpy().astype(np.float32)
-    image_array = np.clip(image_array, 0.0, 3000.0) / 3000.0
-    image_array = (image_array * 255.0).round().astype(np.uint8)
+    image_array = digital.clamp(0.0, 255.0).to(torch.uint8)
+    image_array = image_array.detach().cpu().numpy()
     image_array = np.transpose(image_array, (1, 2, 0))
     return Image.fromarray(image_array, mode="RGB")
 
@@ -275,6 +292,8 @@ class BENTxTDataset(Dataset):
             bands: Iterable[str] | str | None = None,
             img_size: int = 120,
             upsample_mode: str = "nearest",
+            rgb_render_mode: RGBRenderMode = "copernicus",
+            rgb_quantile: float = _default_rgb_quantile,
             types: Iterable[str] | None = None,
             categories: Iterable[str] | None = None,
             countries: Iterable[str] | None = None,
@@ -299,6 +318,11 @@ class BENTxTDataset(Dataset):
             img_size: Target image size for interpolation (default: 120).
             upsample_mode: Interpolation mode for resizing ('nearest', 'bilinear', 'bicubic', etc.).
                 Default: 'nearest'.
+            rgb_render_mode: How to convert raw RGB reflectance bands into
+                uint8 RGB for the VLM path. 'copernicus' applies the official
+                3558 reflectance scale; 'quantile' applies a per-sample
+                quantile stretch.
+            rgb_quantile: Quantile used when rgb_render_mode='quantile'.
             types: Optional filter for annotation types (e.g., 'binary', 'mcq', 'captioning', 'bounding box').
             categories: Optional filter for annotation categories. See [here](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/sql-console/8okbuKf) for possible type-category combinations or retrieve them by yourself using some kind of database tool on the Parquet file.
             countries: Optional filter for acquisition countries (e.g., 'Austria', 'Belgium', 'Finland', 'Ireland', 'Kosovo', 'Lithuania', 'Luxembourg', 'Portugal', 'Serbia', 'Switzerland').
@@ -313,6 +337,13 @@ class BENTxTDataset(Dataset):
         super().__init__()
 
         self.bands = _resolve_bands(bands)
+        if rgb_render_mode not in ("copernicus", "quantile"):
+            raise ValueError(f"Unsupported RGB render mode: {rgb_render_mode}")
+        if not 0.0 < rgb_quantile <= 1.0:
+            raise ValueError("rgb_quantile must be in the interval (0, 1]")
+        self.rgb_render_mode = rgb_render_mode
+        self.rgb_quantile = rgb_quantile
+
         missing_stats = [band for band in self.bands if band not in means or band not in stds]
         if missing_stats:
             raise ValueError(f"Missing BigEarthNet normalization stats for bands: {missing_stats}")
@@ -382,7 +413,11 @@ class BENTxTDataset(Dataset):
         rgb_data = _select_bands(img_data, self.reader_bands, _rgb_band_order)
         multispectral = _select_bands(img_data, self.reader_bands, self.bands)
 
-        image = _sentinel2_rgb_tensor_to_pil(rgb_data)
+        image = _sentinel2_rgb_tensor_to_pil(
+            rgb_data,
+            rgb_render_mode=self.rgb_render_mode,
+            rgb_quantile=self.rgb_quantile,
+        )
         if self.transform is not None:
             multispectral = self.transform(multispectral)
         if not isinstance(image, Image.Image):
@@ -442,6 +477,8 @@ class BENTxTDataModule(pl.LightningDataModule):
             bands: Iterable[str] | str | None = None,
             img_size: int = 120,
             upsample_mode: str = "nearest",
+            rgb_render_mode: RGBRenderMode = "copernicus",
+            rgb_quantile: float = _default_rgb_quantile,
             types: Iterable[str] | None = None,
             categories: Iterable[str] | None = None,
             countries: Iterable[str] | None = None,
@@ -468,6 +505,11 @@ class BENTxTDataModule(pl.LightningDataModule):
             img_size: Target image size for interpolation (default: 120).
             upsample_mode: Interpolation mode for resizing ('nearest', 'bilinear', 'bicubic', etc.).
                 Default: 'nearest'.
+            rgb_render_mode: How to convert raw RGB reflectance bands into
+                uint8 RGB for the VLM path. 'copernicus' applies the official
+                3558 reflectance scale; 'quantile' applies a per-sample
+                quantile stretch.
+            rgb_quantile: Quantile used when rgb_render_mode='quantile'.
             types: Optional filter for annotation types (e.g., 'binary', 'mcq', 'captioning', 'bounding box').
             categories: Optional filter for annotation categories. See [here](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/sql-console/KzrmYgF) for possible type-category combinations or retrieve them by yourself using some kind of database tool on the Parquet file.
             countries: Optional filter for acquisition countries (e.g., 'Austria', 'Belgium', 'Finland', 'Ireland', 'Kosovo', 'Lithuania', 'Luxembourg', 'Portugal', 'Serbia', 'Switzerland').
@@ -489,6 +531,11 @@ class BENTxTDataModule(pl.LightningDataModule):
         self._collator: Callable | None = None
 
         self.bands = _resolve_bands(bands)
+        if rgb_render_mode not in ("copernicus", "quantile"):
+            raise ValueError(f"Unsupported RGB render mode: {rgb_render_mode}")
+        if not 0.0 < rgb_quantile <= 1.0:
+            raise ValueError("rgb_quantile must be in the interval (0, 1]")
+
         missing_stats = [band for band in self.bands if band not in means or band not in stds]
         if missing_stats:
             raise ValueError(f"Missing BigEarthNet normalization stats for bands: {missing_stats}")
@@ -499,6 +546,8 @@ class BENTxTDataModule(pl.LightningDataModule):
             "bands": self.bands,
             "img_size": img_size,
             "upsample_mode": upsample_mode,
+            "rgb_render_mode": rgb_render_mode,
+            "rgb_quantile": rgb_quantile,
             "types": types,
             "categories": categories,
             "countries": countries,
