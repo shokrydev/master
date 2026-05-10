@@ -333,6 +333,40 @@ class Qwen3VLModule(L.LightningModule):
             out[:, b, p + n :] = position_ids[:, b, p:] + n
         return out
 
+    def _insert_projected_tokens_in_kwargs(
+        self,
+        kwargs: dict[str, Any],
+        tokens: torch.Tensor,
+        insert_positions: torch.Tensor,
+    ) -> None:
+        """Insert projected modality tokens into decoder kwargs in-place."""
+        if "inputs_embeds" not in kwargs or kwargs["inputs_embeds"] is None:
+            return
+
+        inputs_embeds = kwargs["inputs_embeds"]
+        kwargs["inputs_embeds"] = self._insert_tokens_3d(inputs_embeds, tokens, insert_positions)
+
+        B = inputs_embeds.shape[0]
+        n = tokens.shape[1]
+        device = tokens.device
+
+        if "attention_mask" in kwargs and kwargs["attention_mask"] is not None:
+            ones = torch.ones(B, n, device=device, dtype=kwargs["attention_mask"].dtype)
+            kwargs["attention_mask"] = self._insert_tokens_2d(
+                kwargs["attention_mask"], ones, insert_positions
+            )
+
+        if "position_ids" in kwargs and kwargs["position_ids"] is not None:
+            kwargs["position_ids"] = self._insert_position_ids(
+                kwargs["position_ids"], insert_positions, n
+            )
+
+        if kwargs.get("visual_pos_masks") is not None:
+            pad = torch.zeros(B, n, device=device, dtype=kwargs["visual_pos_masks"].dtype)
+            kwargs["visual_pos_masks"] = self._insert_tokens_2d(
+                kwargs["visual_pos_masks"], pad, insert_positions
+            )
+
     def _location_embed_insertion_hook(self, module, args, kwargs):
         """Forward pre-hook that inserts location embeddings before visual tokens."""
         location_state = self._location_insertion_state
@@ -346,7 +380,6 @@ class Qwen3VLModule(L.LightningModule):
         lat = location_state["lat"]
         lon = location_state["lon"]
         insert_positions = location_state["insert_positions"]
-        device = lat.device
 
         # SatCLIP expects (B, 2) of (lon, lat) as float64
         coords = torch.stack([lon, lat], dim=-1).double()
@@ -357,33 +390,7 @@ class Qwen3VLModule(L.LightningModule):
         loc_tokens = self.location_modality_projection(loc_embed)
 
         # Insert location tokens immediately before the visual block.
-        if "inputs_embeds" in kwargs and kwargs["inputs_embeds"] is not None:
-            inputs_embeds = kwargs["inputs_embeds"]
-            kwargs["inputs_embeds"] = self._insert_tokens_3d(inputs_embeds, loc_tokens, insert_positions)
-
-            # Extend attention_mask
-            if "attention_mask" in kwargs and kwargs["attention_mask"] is not None:
-                B = inputs_embeds.shape[0]
-                n = self.num_location_tokens
-                ones = torch.ones(B, n, device=device, dtype=kwargs["attention_mask"].dtype)
-                kwargs["attention_mask"] = self._insert_tokens_2d(
-                    kwargs["attention_mask"], ones, insert_positions
-                )
-
-            # Extend position_ids (M-RoPE: shape [3, B, seq_len])
-            if "position_ids" in kwargs and kwargs["position_ids"] is not None:
-                kwargs["position_ids"] = self._insert_position_ids(
-                    kwargs["position_ids"], insert_positions, self.num_location_tokens
-                )
-
-            # Extend visual_pos_masks (bool mask for deepstack visual processing)
-            if kwargs.get("visual_pos_masks") is not None:
-                B = inputs_embeds.shape[0]
-                n = self.num_location_tokens
-                pad = torch.zeros(B, n, device=device, dtype=kwargs["visual_pos_masks"].dtype)
-                kwargs["visual_pos_masks"] = self._insert_tokens_2d(
-                    kwargs["visual_pos_masks"], pad, insert_positions
-                )
+        self._insert_projected_tokens_in_kwargs(kwargs, loc_tokens, insert_positions)
 
         return args, kwargs
 

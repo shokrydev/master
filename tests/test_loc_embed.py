@@ -173,6 +173,46 @@ class InsertTokenHelpersTest(unittest.TestCase):
         )
         self.assertTrue(torch.equal(out, expected))
 
+    def test_insert_projected_tokens_updates_decoder_kwargs(self):
+        module = object.__new__(Qwen3VLModule)
+        kwargs = {
+            "inputs_embeds": torch.tensor(
+                [
+                    [[1.0], [2.0], [3.0]],
+                    [[10.0], [11.0], [12.0]],
+                ]
+            ),
+            "attention_mask": torch.tensor([[1, 1, 1], [1, 1, 1]]),
+            "position_ids": torch.tensor(
+                [
+                    [[0, 1, 2], [5, 6, 7]],
+                    [[10, 11, 12], [15, 16, 17]],
+                    [[20, 21, 22], [25, 26, 27]],
+                ]
+            ),
+            "visual_pos_masks": torch.tensor([[False, True, True], [False, True, True]]),
+        }
+        tokens = torch.tensor([[[90.0], [91.0]], [[80.0], [81.0]]])
+        positions = torch.tensor([1, 3])
+
+        module._insert_projected_tokens_in_kwargs(kwargs, tokens, positions)
+
+        expected_embeds = torch.tensor(
+            [
+                [[1.0], [90.0], [91.0], [2.0], [3.0]],
+                [[10.0], [11.0], [12.0], [80.0], [81.0]],
+            ]
+        )
+        expected_attention = torch.tensor([[1, 1, 1, 1, 1], [1, 1, 1, 1, 1]])
+        expected_visual_mask = torch.tensor(
+            [[False, False, False, True, True], [False, True, True, False, False]]
+        )
+
+        self.assertTrue(torch.equal(kwargs["inputs_embeds"], expected_embeds))
+        self.assertTrue(torch.equal(kwargs["attention_mask"], expected_attention))
+        self.assertTrue(torch.equal(kwargs["visual_pos_masks"], expected_visual_mask))
+        self.assertEqual(kwargs["position_ids"].shape, (3, 2, 5))
+
 
 class PrepareModelInputsTest(unittest.TestCase):
     def test_prepare_model_inputs_inserts_ignore_labels_at_visual_boundary(self):
