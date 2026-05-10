@@ -385,8 +385,10 @@ class Qwen3VLModule(L.LightningModule):
         lat = batch.pop("lat", None)
         lon = batch.pop("lon", None)
         target_texts = batch.pop("target_texts", None)
-        batch.pop("multispectral", None)
-        batch.pop("multispectral_bands", None)
+        non_rgb_imagery = {
+            "multispectral": batch.pop("multispectral", None),
+            "multispectral_bands": batch.pop("multispectral_bands", None),
+        }
 
         if self.loc_mode == "loc_embed":
             if lat is None or lon is None:
@@ -426,7 +428,7 @@ class Qwen3VLModule(L.LightningModule):
                 )
                 batch["labels"] = self._insert_tokens_2d(batch["labels"], ignore, insert_positions)
 
-        return batch, target_texts, lat, lon
+        return batch, target_texts, lat, lon, non_rgb_imagery
 
     def _set_datamodule_collator(self):
         """Attach the collator to the active datamodule once it exists."""
@@ -481,7 +483,7 @@ class Qwen3VLModule(L.LightningModule):
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Validation step with loss computation and optional generation metrics."""
-        batch, target_texts, _, _ = self._prepare_model_inputs(batch)
+        batch, target_texts, _, _, _ = self._prepare_model_inputs(batch)
         with torch.no_grad():
             outputs = self.model(**batch)
 
@@ -517,7 +519,7 @@ class Qwen3VLModule(L.LightningModule):
 
     def test_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Test step — always generates and accumulates captioning metrics."""
-        batch, target_texts, lat, lon = self._prepare_model_inputs(batch)
+        batch, target_texts, lat, lon, _ = self._prepare_model_inputs(batch)
         with torch.no_grad():
             outputs = self.model(**batch)
 
