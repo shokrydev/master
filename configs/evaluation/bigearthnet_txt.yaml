@@ -18,6 +18,7 @@ trainer:
 model:
   init_args:
     adapter_dir: ${paths.adapter_dir}
+    non_rgb_mode: ignore
 
 data:
   class_path: src.data_modules.BENTxTDataModule

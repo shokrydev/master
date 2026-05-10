@@ -57,6 +57,7 @@ class Qwen3VLModule(L.LightningModule):
         val_generate_batches: int = 0,
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
         loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
+        non_rgb_mode: Literal["ignore", "embed"] = "ignore",
         satclip_checkpoint: str | None = None,
         satclip_dim: int = 256,
         num_location_tokens: int = 1,
@@ -89,12 +90,17 @@ class Qwen3VLModule(L.LightningModule):
                 (0 = no generation metrics, -1 = all batches). Test always generates.
             system_prompt: Optional system message injected during chat formatting.
             loc_mode: Location conditioning mode ("no_loc", "loc_text", "loc_embed")
+            non_rgb_mode: Non-RGB imagery mode. "ignore" strips non-RGB imagery
+                before Qwen; "embed" is reserved for the future non-RGB tower.
             satclip_checkpoint: Path to SatCLIP checkpoint (required for encoder mode)
             satclip_dim: SatCLIP embedding dimension
             num_location_tokens: Number of location tokens to insert before the visual block (encoder mode)
             test_predictions_path: If set, save per-sample predictions to this JSON path during test
         """
         super().__init__()
+
+        if non_rgb_mode not in {"ignore", "embed"}:
+            raise ValueError(f"Unsupported non_rgb_mode: {non_rgb_mode}")
 
         self.save_hyperparameters()
 
@@ -118,6 +124,7 @@ class Qwen3VLModule(L.LightningModule):
         self.val_generate_batches = val_generate_batches
         self.system_prompt = system_prompt
         self.loc_mode = loc_mode
+        self.non_rgb_mode = non_rgb_mode
         self.satclip_checkpoint = satclip_checkpoint
         self.satclip_dim = satclip_dim
         self.num_location_tokens = num_location_tokens
@@ -389,6 +396,12 @@ class Qwen3VLModule(L.LightningModule):
             "multispectral": batch.pop("multispectral", None),
             "multispectral_bands": batch.pop("multispectral_bands", None),
         }
+        if self.non_rgb_mode == "embed":
+            raise NotImplementedError(
+                "non_rgb_mode='embed' requires a non-RGB imagery encoder and token projection"
+            )
+        if self.non_rgb_mode != "ignore":
+            raise ValueError(f"Unsupported non_rgb_mode: {self.non_rgb_mode}")
 
         if self.loc_mode == "loc_embed":
             if lat is None or lon is None:

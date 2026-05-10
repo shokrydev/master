@@ -101,6 +101,7 @@ def _install_captioning_stub():
 def _build_encoder_test_module(num_location_tokens: int = 2):
     module = object.__new__(Qwen3VLModule)
     module.loc_mode = "loc_embed"
+    module.non_rgb_mode = "ignore"
     module.num_location_tokens = num_location_tokens
     module.device = torch.device("cpu")
     module._location_insertion_state = None
@@ -217,6 +218,7 @@ class PrepareModelInputsTest(unittest.TestCase):
     def test_prepare_model_inputs_is_invariant_for_non_encoder_modes(self):
         module = object.__new__(Qwen3VLModule)
         module.loc_mode = "loc_text"
+        module.non_rgb_mode = "ignore"
         module.num_location_tokens = 2
         module.device = torch.device("cpu")
         module._location_insertion_state = None
@@ -244,6 +246,25 @@ class PrepareModelInputsTest(unittest.TestCase):
         self.assertTrue(torch.equal(lat, torch.tensor([1.0], dtype=torch.float64)))
         self.assertTrue(torch.equal(lon, torch.tensor([2.0], dtype=torch.float64)))
 
+    def test_prepare_model_inputs_rejects_unimplemented_non_rgb_embed_mode(self):
+        module = object.__new__(Qwen3VLModule)
+        module.loc_mode = "no_loc"
+        module.non_rgb_mode = "embed"
+        module.num_location_tokens = 1
+        module.device = torch.device("cpu")
+        module._location_insertion_state = None
+
+        batch = {
+            "input_ids": torch.tensor([[101, 102, 103]]),
+            "attention_mask": torch.tensor([[1, 1, 1]]),
+            "labels": torch.tensor([[11, 12, 13]]),
+            "multispectral": torch.ones(1, 3, 2, 2),
+            "multispectral_bands": ["B04", "B03", "B02"],
+        }
+
+        with self.assertRaisesRegex(NotImplementedError, "non_rgb_mode='embed'"):
+            module._prepare_model_inputs(batch)
+
 
 class AdapterArtifactSetupTest(unittest.TestCase):
     def test_fit_rejects_adapter_dir(self):
@@ -259,6 +280,10 @@ class AdapterArtifactSetupTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "adapter_dir"):
             module.setup("validate")
+
+    def test_invalid_non_rgb_mode_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported non_rgb_mode"):
+            Qwen3VLModule(non_rgb_mode="spectral")
 
     def test_validate_loads_saved_adapters_without_wrapping_peft_again(self):
         _install_captioning_stub()
