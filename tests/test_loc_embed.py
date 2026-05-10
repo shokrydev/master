@@ -236,8 +236,8 @@ class PrepareModelInputsTest(unittest.TestCase):
         self.assertEqual(target_texts, [["a"], ["b"]])
         self.assertTrue(torch.equal(lat, torch.tensor([52.5, -33.9], dtype=torch.float64)))
         self.assertTrue(torch.equal(lon, torch.tensor([13.4, 151.2], dtype=torch.float64)))
-        self.assertIsNone(non_rgb_imagery["multispectral"])
-        self.assertIsNone(non_rgb_imagery["multispectral_bands"])
+        self.assertIsNone(non_rgb_imagery["tensor"])
+        self.assertIsNone(non_rgb_imagery["bands"])
 
     def test_prepare_model_inputs_falls_back_to_sequence_end_without_visual_tokens(self):
         module = _build_encoder_test_module(num_location_tokens=1)
@@ -270,17 +270,17 @@ class PrepareModelInputsTest(unittest.TestCase):
             "lat": torch.tensor([1.0], dtype=torch.float64),
             "lon": torch.tensor([2.0], dtype=torch.float64),
             "target_texts": [["ref"]],
-            "multispectral": torch.ones(1, 3, 2, 2),
-            "multispectral_bands": ["B04", "B03", "B02"],
+            "non_rgb_imagery": torch.ones(1, 3, 2, 2),
+            "non_rgb_bands": ["VV", "VH", "B04", "B03", "B02"],
         }
 
         model_batch, target_texts, lat, lon, non_rgb_imagery = module._prepare_model_inputs(batch)
 
         self.assertTrue(torch.equal(model_batch["labels"], torch.tensor([[11, 12, 13]])))
-        self.assertNotIn("multispectral", model_batch)
-        self.assertNotIn("multispectral_bands", model_batch)
-        self.assertTrue(torch.equal(non_rgb_imagery["multispectral"], torch.ones(1, 3, 2, 2)))
-        self.assertEqual(non_rgb_imagery["multispectral_bands"], ["B04", "B03", "B02"])
+        self.assertNotIn("non_rgb_imagery", model_batch)
+        self.assertNotIn("non_rgb_bands", model_batch)
+        self.assertTrue(torch.equal(non_rgb_imagery["tensor"], torch.ones(1, 3, 2, 2)))
+        self.assertEqual(non_rgb_imagery["bands"], ["VV", "VH", "B04", "B03", "B02"])
         self.assertIsNone(module._location_insertion_state)
         self.assertEqual(target_texts, [["ref"]])
         self.assertTrue(torch.equal(lat, torch.tensor([1.0], dtype=torch.float64)))
@@ -298,8 +298,8 @@ class PrepareModelInputsTest(unittest.TestCase):
             "input_ids": torch.tensor([[101, 102, 103]]),
             "attention_mask": torch.tensor([[1, 1, 1]]),
             "labels": torch.tensor([[11, 12, 13]]),
-            "multispectral": torch.ones(1, 3, 2, 2),
-            "multispectral_bands": ["B04", "B03", "B02"],
+            "non_rgb_imagery": torch.ones(1, 3, 2, 2),
+            "non_rgb_bands": ["VV", "VH", "B04", "B03", "B02"],
         }
 
         with self.assertRaisesRegex(NotImplementedError, "non_rgb_mode='embed'"):

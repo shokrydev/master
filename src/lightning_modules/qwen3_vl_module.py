@@ -400,8 +400,8 @@ class Qwen3VLModule(L.LightningModule):
         lon = batch.pop("lon", None)
         target_texts = batch.pop("target_texts", None)
         non_rgb_imagery = {
-            "multispectral": batch.pop("multispectral", None),
-            "multispectral_bands": batch.pop("multispectral_bands", None),
+            "tensor": batch.pop("non_rgb_imagery", None),
+            "bands": batch.pop("non_rgb_bands", None),
         }
         if self.non_rgb_mode == "embed":
             raise NotImplementedError(

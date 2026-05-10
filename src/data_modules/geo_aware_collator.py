@@ -12,8 +12,8 @@ class GeoAwareCollator:
       - target_texts
       - lat
       - lon
-      - multispectral (optional)
-      - multispectral_bands (optional)
+      - non_rgb_imagery (optional)
+      - non_rgb_bands (optional)
 
     The inner Unsloth collator expects chat-style `messages`, so this wrapper
     constructs those messages and re-attaches metadata needed later in the
@@ -52,11 +52,11 @@ class GeoAwareCollator:
     def __call__(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         # Convert normalized samples to the message format expected by Unsloth.
         lats, lons, target_texts_batch = [], [], []
-        multispectral_images = []
-        multispectral_bands = []
-        has_multispectral = ["multispectral" in item for item in items]
-        if any(has_multispectral) and not all(has_multispectral):
-            raise ValueError("Either every sample or no sample must include 'multispectral'")
+        non_rgb_images = []
+        non_rgb_bands = []
+        has_non_rgb_imagery = ["non_rgb_imagery" in item for item in items]
+        if any(has_non_rgb_imagery) and not all(has_non_rgb_imagery):
+            raise ValueError("Either every sample or no sample must include 'non_rgb_imagery'")
 
         cleaned = []
         for item in items:
@@ -77,15 +77,15 @@ class GeoAwareCollator:
             lats.append(lat)
             lons.append(lon)
             target_texts_batch.append(targets)
-            if has_multispectral[0]:
-                multispectral = item["multispectral"]
-                if not isinstance(multispectral, torch.Tensor):
+            if has_non_rgb_imagery[0]:
+                non_rgb_image = item["non_rgb_imagery"]
+                if not isinstance(non_rgb_image, torch.Tensor):
                     raise TypeError(
-                        "Expected 'multispectral' to be a torch.Tensor in normalized sample, "
-                        f"got {type(multispectral).__name__}"
+                        "Expected 'non_rgb_imagery' to be a torch.Tensor in normalized sample, "
+                        f"got {type(non_rgb_image).__name__}"
                     )
-                multispectral_images.append(multispectral)
-                multispectral_bands.append(item.get("multispectral_bands"))
+                non_rgb_images.append(non_rgb_image)
+                non_rgb_bands.append(item.get("non_rgb_bands"))
 
             cleaned.append({"messages": self._to_messages(image, input_text, targets[0])})
 
@@ -99,12 +99,12 @@ class GeoAwareCollator:
 
         # Keep full targets for multi-reference evaluation.
         batch["target_texts"] = target_texts_batch
-        if multispectral_images:
-            batch["multispectral"] = torch.stack(multispectral_images, dim=0)
-            if any(bands is not None for bands in multispectral_bands):
-                if all(bands == multispectral_bands[0] for bands in multispectral_bands):
-                    batch["multispectral_bands"] = multispectral_bands[0]
+        if non_rgb_images:
+            batch["non_rgb_imagery"] = torch.stack(non_rgb_images, dim=0)
+            if any(bands is not None for bands in non_rgb_bands):
+                if all(bands == non_rgb_bands[0] for bands in non_rgb_bands):
+                    batch["non_rgb_bands"] = non_rgb_bands[0]
                 else:
-                    batch["multispectral_bands"] = multispectral_bands
+                    batch["non_rgb_bands"] = non_rgb_bands
 
         return batch

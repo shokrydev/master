@@ -25,7 +25,7 @@ data:
   init_args:
     image_lmdb_file: ${paths.bigearthnet_v2_lmdb_root}
     metadata_file: ${paths.bigearthnet_txt_parquet_path}
-    bands: S2-10m20m
+    bands: S1S2-10m20m
     rgb_render_mode: copernicus
     rgb_quantile: 0.90
     batch_size: 1

@@ -119,7 +119,7 @@ def _select_bands(
     return image_tensor[indices]
 
 
-def default_multispectral_transform(mean: list[float], std: list[float]) -> Callable:
+def default_non_rgb_transform(mean: list[float], std: list[float]) -> Callable:
     mean_values = tuple(float(value) for value in mean)
     std_values = tuple(float(value) for value in std)
 
@@ -133,18 +133,18 @@ def default_multispectral_transform(mean: list[float], std: list[float]) -> Call
 
 def collate_normalized(batch):
     images = []
-    multispectral_images = []
+    non_rgb_images = []
     input_texts = []
     target_texts = []
     latitudes = []
     longitudes = []
-    multispectral_bands = []
+    non_rgb_bands = []
 
     for item in batch:
         images.append(item["image"])
-        if "multispectral" in item:
-            multispectral_images.append(item["multispectral"])
-            multispectral_bands.append(item.get("multispectral_bands"))
+        if "non_rgb_imagery" in item:
+            non_rgb_images.append(item["non_rgb_imagery"])
+            non_rgb_bands.append(item.get("non_rgb_bands"))
         input_texts.append(item["input_text"])
         target_texts.append(item["target_texts"])
         latitudes.append(item["lat"])
@@ -158,12 +158,12 @@ def collate_normalized(batch):
         "lon": torch.tensor(longitudes, dtype=torch.float64),
     }
 
-    if multispectral_images:
-        collated["multispectral"] = torch.stack(multispectral_images, dim=0)
-        if all(bands == multispectral_bands[0] for bands in multispectral_bands):
-            collated["multispectral_bands"] = multispectral_bands[0]
+    if non_rgb_images:
+        collated["non_rgb_imagery"] = torch.stack(non_rgb_images, dim=0)
+        if all(bands == non_rgb_bands[0] for bands in non_rgb_bands):
+            collated["non_rgb_bands"] = non_rgb_bands[0]
         else:
-            collated["multispectral_bands"] = multispectral_bands
+            collated["non_rgb_bands"] = non_rgb_bands
 
     return collated
 
@@ -287,7 +287,7 @@ class BENTxTDataset(Dataset):
     This dataset class loads the textual annotations from BigEarthNet.txt
     together with Sentinel-1/Sentinel-2 imagery from BigEarthNet-v2.0
     (converted to LMDB format) and emits the shared repo sample schema for the
-    VLM path plus a normalized multispectral tensor for future spectral towers.
+    VLM path plus normalized non-RGB imagery for future S1/S2 towers.
     It supports various filtering options to create custom dataset splits based on
     textual annotation metadata, such as type or category, or image metadata
     like country, season, and climate zone.
@@ -320,7 +320,7 @@ class BENTxTDataset(Dataset):
         Args:
             lmdb_file: Path to the LMDB file containing the BigEarthNet-v2.0 image data.
             metadata_file: Path to the BigEarthNet.txt Parquet file.
-            bands: Multispectral band names to normalize and expose. Can be a
+            bands: Sentinel-1/Sentinel-2 band names to normalize and expose. Can be a
                 predefined combination key ('RGB', 'S2-10m20m', 'S1S2-10m20m',
                 'all') or an iterable of band names. Defaults to 'all'.
                 RGB bands are always loaded separately for the VLM image path.
@@ -337,7 +337,7 @@ class BENTxTDataset(Dataset):
             countries: Optional filter for acquisition countries (e.g., 'Austria', 'Belgium', 'Finland', 'Ireland', 'Kosovo', 'Lithuania', 'Luxembourg', 'Portugal', 'Serbia', 'Switzerland').
             seasons: Optional filter for seasons (e.g., 'Spring', 'Summer', 'Fall', 'Winter').
             climate_zones: Optional filter for climate zones. See [here](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/sql-console/3xLT8_u) for possible climate_zones values or retrieve them by yourself using some kind of database tool on the Parquet file.
-            transform: Optional transform applied to the multispectral tensor.
+            transform: Optional transform applied to the non-RGB imagery tensor.
             splits: Optional filter for dataset splits ('train', 'validation', 'test', 'bench').
             point_token: Optional tuple of [start_token, end_token] to wrap <point> tags in text.
             ref_token: Optional tuple of [start_token, end_token] to wrap <ref> tags in text.
@@ -409,8 +409,8 @@ class BENTxTDataset(Dataset):
         Returns:
             dict: A dictionary containing:
                 - 'image': RGB PIL image for the shared VLM collator path.
-                - 'multispectral': Normalized multispectral tensor.
-                - 'multispectral_bands': Band order of the multispectral tensor.
+                - 'non_rgb_imagery': Normalized S1/S2 tensor.
+                - 'non_rgb_bands': Band order of the non-RGB imagery tensor.
                 - 'input_text': The instruction or question for the VLM.
                 - 'target_texts': List containing the expected text output(s).
                 - 'lat': Latitude of the patch center.
@@ -420,7 +420,7 @@ class BENTxTDataset(Dataset):
         img_id = sample.patch_id
         img_data = self.image_reader[img_id]
         rgb_data = _select_bands(img_data, self.reader_bands, _rgb_band_order)
-        multispectral = _select_bands(img_data, self.reader_bands, self.bands)
+        non_rgb_imagery = _select_bands(img_data, self.reader_bands, self.bands)
 
         image = _sentinel2_rgb_tensor_to_pil(
             rgb_data,
@@ -428,7 +428,7 @@ class BENTxTDataset(Dataset):
             rgb_quantile=self.rgb_quantile,
         )
         if self.transform is not None:
-            multispectral = self.transform(multispectral)
+            non_rgb_imagery = self.transform(non_rgb_imagery)
         if not isinstance(image, Image.Image):
             raise TypeError(
                 "BENTxTDataset expects the shared VLM image path to produce a PIL image"
@@ -444,8 +444,8 @@ class BENTxTDataset(Dataset):
 
         return {
             "image": image,
-            "multispectral": multispectral,
-            "multispectral_bands": list(self.bands),
+            "non_rgb_imagery": non_rgb_imagery,
+            "non_rgb_bands": list(self.bands),
             "input_text": text_in,
             "target_texts": [str(output)],
             "lat": float(sample.latitude),
@@ -464,7 +464,7 @@ class BENTxTDataModule(pl.LightningDataModule):
     The module manages:
     - Automatic dataset setup for different training stages
     - Sentinel-2 RGB rendering into PIL images for the shared collator/model path
-    - normalized multispectral tensors for future specialized vision encoders
+    - normalized non-RGB imagery tensors for future specialized vision encoders
     - DataLoader creation with appropriate batch sizes and worker processes
     - GPU pinning when CUDA is available
 
@@ -507,7 +507,7 @@ class BENTxTDataModule(pl.LightningDataModule):
         Args:
             lmdb_file: Path to the LMDB file containing the BigEarthNet-v2.0 image data.
             metadata_file: Path to the BigEarthNet.txt Parquet file.
-            bands: Multispectral band names to normalize and expose. Can be a
+            bands: Sentinel-1/Sentinel-2 band names to normalize and expose. Can be a
                 predefined combination key ('RGB', 'S2-10m20m', 'S1S2-10m20m',
                 'all') or an iterable of band names. Defaults to 'all'.
                 RGB bands are always loaded separately for the VLM image path.
@@ -527,8 +527,8 @@ class BENTxTDataModule(pl.LightningDataModule):
             num_workers_dataloader: Number of worker processes for DataLoaders (default: 4).
                 Set to 0 to disable multiprocessing.
             batch_size: Batch size for DataLoaders (default: 16).
-            image_transforms_train: Optional transform applied to normalized multispectral tensors for training.
-            image_transforms_eval: Optional transform applied to normalized multispectral tensors for evaluation.
+            image_transforms_train: Optional transform applied to normalized non-RGB imagery tensors for training.
+            image_transforms_eval: Optional transform applied to normalized non-RGB imagery tensors for evaluation.
             point_token: Optional tuple of [start_token, end_token] to wrap <point> tags in text.
             ref_token: Optional tuple of [start_token, end_token] to wrap <ref> tags in text.
             info_fn: Optional callback function for logging during initialization.
@@ -571,8 +571,8 @@ class BENTxTDataModule(pl.LightningDataModule):
         self.std = [stds[band] for band in self.bands]
 
         # The shared Qwen/Unsloth path gets unnormalized RGB PIL images. These
-        # transforms are for the parallel multispectral tensor path only.
-        default_transform = default_multispectral_transform(self.mean, self.std)
+        # transforms are for the parallel non-RGB imagery tensor path only.
+        default_transform = default_non_rgb_transform(self.mean, self.std)
         self.train_transforms = (
             image_transforms_train if image_transforms_train is not None else default_transform
         )
