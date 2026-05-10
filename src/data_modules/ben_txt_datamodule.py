@@ -24,6 +24,7 @@ except ImportError:
 
 _s1_bandnames = ["VV", "VH"]
 _s2_bandnames = ["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B09", "B11", "B12"]
+_valid_bandnames = set(_s1_bandnames + _s2_bandnames)
 _predefined_bandcombinations = {
     "RGB": ["B04", "B03", "B02"],
     "S2-10m20m": ["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B11", "B12"],
@@ -81,12 +82,20 @@ def _resolve_bands(bands: Iterable[str] | str | None, *, default: str = "all") -
             raise ValueError(
                 f"{bands} not in predefined options: {_predefined_bandcombinations.keys()}"
             )
-        return list(_predefined_bandcombinations[bands])
-    if isinstance(bands, Iterable):
-        return list(bands)
-    if bands is None:
-        return list(_predefined_bandcombinations[default])
-    raise NotImplementedError(f"{bands} is not supported")
+        resolved = list(_predefined_bandcombinations[bands])
+    elif isinstance(bands, Iterable):
+        resolved = list(bands)
+    elif bands is None:
+        resolved = list(_predefined_bandcombinations[default])
+    else:
+        raise TypeError(f"Unsupported bands value: {bands!r}")
+
+    invalid = [band for band in resolved if band not in _valid_bandnames]
+    if invalid:
+        raise ValueError(f"Unknown BigEarthNet band names: {invalid}")
+    if not resolved:
+        raise ValueError("At least one BigEarthNet band must be selected")
+    return resolved
 
 
 def _union_bands(*band_groups: Iterable[str]) -> list[str]:
