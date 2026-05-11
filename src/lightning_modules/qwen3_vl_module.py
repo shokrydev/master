@@ -137,6 +137,7 @@ class Qwen3VLModule(L.LightningModule):
         # loc_embed components (initialized in setup)
         self.satclip = None
         self.location_modality_projection = None
+        self.non_rgb_modality_projection = None
         self._geo_hook_handle = None
         self._location_insertion_state = None
 
@@ -217,15 +218,22 @@ class Qwen3VLModule(L.LightningModule):
 
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in self.model.parameters())
-        proj_params = 0
+        location_proj_params = 0
+        non_rgb_proj_params = 0
         if self.location_modality_projection is not None:
-            proj_params = sum(p.numel() for p in self.location_modality_projection.parameters())
-            trainable_params += proj_params
-            total_params += proj_params
+            location_proj_params = sum(p.numel() for p in self.location_modality_projection.parameters())
+            trainable_params += location_proj_params
+            total_params += location_proj_params
+        if self.non_rgb_modality_projection is not None:
+            non_rgb_proj_params = sum(p.numel() for p in self.non_rgb_modality_projection.parameters())
+            trainable_params += non_rgb_proj_params
+            total_params += non_rgb_proj_params
         self.print(f"Trainable params: {trainable_params:,} / {total_params:,} "
                    f"({100 * trainable_params / total_params:.2f}%)")
-        if proj_params:
-            self.print(f"LocationModalityProjection params: {proj_params:,}")
+        if self.location_modality_projection is not None:
+            self.print(f"LocationModalityProjection params: {location_proj_params:,}")
+        if self.non_rgb_modality_projection is not None:
+            self.print(f"NonRGBModalityProjection params: {non_rgb_proj_params:,}")
 
     def _load_location_projection_artifacts(self) -> None:
         """Load the saved location projection that lives outside the PEFT adapter package."""
@@ -596,12 +604,17 @@ class Qwen3VLModule(L.LightningModule):
         decay_params = []
         no_decay_params = []
 
-        # Collect params from model + location_modality_projection (if present)
+        # Collect params from model + projection modules (if present)
         all_named_params = list(self.model.named_parameters())
         if self.location_modality_projection is not None:
             all_named_params.extend(
                 (f"location_modality_projection.{n}", p)
                 for n, p in self.location_modality_projection.named_parameters()
+            )
+        if self.non_rgb_modality_projection is not None:
+            all_named_params.extend(
+                (f"non_rgb_modality_projection.{n}", p)
+                for n, p in self.non_rgb_modality_projection.named_parameters()
             )
 
         for name, param in all_named_params:

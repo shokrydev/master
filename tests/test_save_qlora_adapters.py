@@ -60,6 +60,7 @@ class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
                 model=_FakeModel(),
                 tokenizer=_FakeTokenizer(),
                 location_modality_projection=torch.nn.Linear(2, 3),
+                non_rgb_modality_projection=torch.nn.Linear(4, 5),
                 print=lambda *args, **kwargs: None,
             )
 
@@ -68,6 +69,7 @@ class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
             self.assertTrue((Path(tmpdir) / "adapter_model.safetensors").exists())
             self.assertTrue((Path(tmpdir) / "tokenizer.json").exists())
             self.assertTrue((Path(tmpdir) / "location_modality_projection.safetensors").exists())
+            self.assertTrue((Path(tmpdir) / "non_rgb_modality_projection.safetensors").exists())
             self.assertEqual(callback.best_score, 0.5)
 
     def test_train_end_saves_when_no_validation_metric_was_seen(self):
@@ -78,6 +80,7 @@ class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
                 model=_FakeModel(),
                 tokenizer=_FakeTokenizer(),
                 location_modality_projection=None,
+                non_rgb_modality_projection=None,
                 print=lambda *args, **kwargs: None,
             )
 
@@ -86,6 +89,7 @@ class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
             self.assertTrue((Path(tmpdir) / "adapter_model.safetensors").exists())
             self.assertTrue((Path(tmpdir) / "tokenizer.json").exists())
             self.assertFalse((Path(tmpdir) / "location_modality_projection.safetensors").exists())
+            self.assertFalse((Path(tmpdir) / "non_rgb_modality_projection.safetensors").exists())
 
 
 if __name__ == "__main__":
