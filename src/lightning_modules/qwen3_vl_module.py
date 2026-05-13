@@ -57,6 +57,7 @@ class Qwen3VLModule(L.LightningModule):
         val_generate_batches: int = 0,
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
         loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
+        non_rgb_mode: Literal["ignore", "embed"] = "ignore",
         satclip_checkpoint: str | None = None,
         satclip_dim: int = 256,
         num_location_tokens: int = 1,
@@ -89,12 +90,17 @@ class Qwen3VLModule(L.LightningModule):
                 (0 = no generation metrics, -1 = all batches). Test always generates.
             system_prompt: Optional system message injected during chat formatting.
             loc_mode: Location conditioning mode ("no_loc", "loc_text", "loc_embed")
+            non_rgb_mode: Non-RGB imagery mode. "ignore" strips non-RGB imagery
+                before Qwen; "embed" is reserved for the future non-RGB tower.
             satclip_checkpoint: Path to SatCLIP checkpoint (required for encoder mode)
             satclip_dim: SatCLIP embedding dimension
             num_location_tokens: Number of location tokens to insert before the visual block (encoder mode)
             test_predictions_path: If set, save per-sample predictions to this JSON path during test
         """
         super().__init__()
+
+        if non_rgb_mode not in {"ignore", "embed"}:
+            raise ValueError(f"Unsupported non_rgb_mode: {non_rgb_mode}")
 
         self.save_hyperparameters()
 
@@ -118,6 +124,7 @@ class Qwen3VLModule(L.LightningModule):
         self.val_generate_batches = val_generate_batches
         self.system_prompt = system_prompt
         self.loc_mode = loc_mode
+        self.non_rgb_mode = non_rgb_mode
         self.satclip_checkpoint = satclip_checkpoint
         self.satclip_dim = satclip_dim
         self.num_location_tokens = num_location_tokens
@@ -130,6 +137,7 @@ class Qwen3VLModule(L.LightningModule):
         # loc_embed components (initialized in setup)
         self.satclip = None
         self.location_modality_projection = None
+        self.non_rgb_modality_projection = None
         self._geo_hook_handle = None
         self._location_insertion_state = None
 
@@ -210,15 +218,22 @@ class Qwen3VLModule(L.LightningModule):
 
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in self.model.parameters())
-        proj_params = 0
+        location_proj_params = 0
+        non_rgb_proj_params = 0
         if self.location_modality_projection is not None:
-            proj_params = sum(p.numel() for p in self.location_modality_projection.parameters())
-            trainable_params += proj_params
-            total_params += proj_params
+            location_proj_params = sum(p.numel() for p in self.location_modality_projection.parameters())
+            trainable_params += location_proj_params
+            total_params += location_proj_params
+        if self.non_rgb_modality_projection is not None:
+            non_rgb_proj_params = sum(p.numel() for p in self.non_rgb_modality_projection.parameters())
+            trainable_params += non_rgb_proj_params
+            total_params += non_rgb_proj_params
         self.print(f"Trainable params: {trainable_params:,} / {total_params:,} "
                    f"({100 * trainable_params / total_params:.2f}%)")
-        if proj_params:
-            self.print(f"LocationModalityProjection params: {proj_params:,}")
+        if self.location_modality_projection is not None:
+            self.print(f"LocationModalityProjection params: {location_proj_params:,}")
+        if self.non_rgb_modality_projection is not None:
+            self.print(f"NonRGBModalityProjection params: {non_rgb_proj_params:,}")
 
     def _load_location_projection_artifacts(self) -> None:
         """Load the saved location projection that lives outside the PEFT adapter package."""
@@ -326,6 +341,40 @@ class Qwen3VLModule(L.LightningModule):
             out[:, b, p + n :] = position_ids[:, b, p:] + n
         return out
 
+    def _insert_projected_tokens_in_kwargs(
+        self,
+        kwargs: dict[str, Any],
+        tokens: torch.Tensor,
+        insert_positions: torch.Tensor,
+    ) -> None:
+        """Insert projected modality tokens into decoder kwargs in-place."""
+        if "inputs_embeds" not in kwargs or kwargs["inputs_embeds"] is None:
+            return
+
+        inputs_embeds = kwargs["inputs_embeds"]
+        kwargs["inputs_embeds"] = self._insert_tokens_3d(inputs_embeds, tokens, insert_positions)
+
+        B = inputs_embeds.shape[0]
+        n = tokens.shape[1]
+        device = tokens.device
+
+        if "attention_mask" in kwargs and kwargs["attention_mask"] is not None:
+            ones = torch.ones(B, n, device=device, dtype=kwargs["attention_mask"].dtype)
+            kwargs["attention_mask"] = self._insert_tokens_2d(
+                kwargs["attention_mask"], ones, insert_positions
+            )
+
+        if "position_ids" in kwargs and kwargs["position_ids"] is not None:
+            kwargs["position_ids"] = self._insert_position_ids(
+                kwargs["position_ids"], insert_positions, n
+            )
+
+        if kwargs.get("visual_pos_masks") is not None:
+            pad = torch.zeros(B, n, device=device, dtype=kwargs["visual_pos_masks"].dtype)
+            kwargs["visual_pos_masks"] = self._insert_tokens_2d(
+                kwargs["visual_pos_masks"], pad, insert_positions
+            )
+
     def _location_embed_insertion_hook(self, module, args, kwargs):
         """Forward pre-hook that inserts location embeddings before visual tokens."""
         location_state = self._location_insertion_state
@@ -339,7 +388,6 @@ class Qwen3VLModule(L.LightningModule):
         lat = location_state["lat"]
         lon = location_state["lon"]
         insert_positions = location_state["insert_positions"]
-        device = lat.device
 
         # SatCLIP expects (B, 2) of (lon, lat) as float64
         coords = torch.stack([lon, lat], dim=-1).double()
@@ -350,33 +398,7 @@ class Qwen3VLModule(L.LightningModule):
         loc_tokens = self.location_modality_projection(loc_embed)
 
         # Insert location tokens immediately before the visual block.
-        if "inputs_embeds" in kwargs and kwargs["inputs_embeds"] is not None:
-            inputs_embeds = kwargs["inputs_embeds"]
-            kwargs["inputs_embeds"] = self._insert_tokens_3d(inputs_embeds, loc_tokens, insert_positions)
-
-            # Extend attention_mask
-            if "attention_mask" in kwargs and kwargs["attention_mask"] is not None:
-                B = inputs_embeds.shape[0]
-                n = self.num_location_tokens
-                ones = torch.ones(B, n, device=device, dtype=kwargs["attention_mask"].dtype)
-                kwargs["attention_mask"] = self._insert_tokens_2d(
-                    kwargs["attention_mask"], ones, insert_positions
-                )
-
-            # Extend position_ids (M-RoPE: shape [3, B, seq_len])
-            if "position_ids" in kwargs and kwargs["position_ids"] is not None:
-                kwargs["position_ids"] = self._insert_position_ids(
-                    kwargs["position_ids"], insert_positions, self.num_location_tokens
-                )
-
-            # Extend visual_pos_masks (bool mask for deepstack visual processing)
-            if kwargs.get("visual_pos_masks") is not None:
-                B = inputs_embeds.shape[0]
-                n = self.num_location_tokens
-                pad = torch.zeros(B, n, device=device, dtype=kwargs["visual_pos_masks"].dtype)
-                kwargs["visual_pos_masks"] = self._insert_tokens_2d(
-                    kwargs["visual_pos_masks"], pad, insert_positions
-                )
+        self._insert_projected_tokens_in_kwargs(kwargs, loc_tokens, insert_positions)
 
         return args, kwargs
 
@@ -385,6 +407,16 @@ class Qwen3VLModule(L.LightningModule):
         lat = batch.pop("lat", None)
         lon = batch.pop("lon", None)
         target_texts = batch.pop("target_texts", None)
+        non_rgb_imagery = {
+            "tensor": batch.pop("non_rgb_imagery", None),
+            "bands": batch.pop("non_rgb_bands", None),
+        }
+        if self.non_rgb_mode == "embed":
+            raise NotImplementedError(
+                "non_rgb_mode='embed' requires a non-RGB imagery encoder and token projection"
+            )
+        if self.non_rgb_mode != "ignore":
+            raise ValueError(f"Unsupported non_rgb_mode: {self.non_rgb_mode}")
 
         if self.loc_mode == "loc_embed":
             if lat is None or lon is None:
@@ -424,7 +456,7 @@ class Qwen3VLModule(L.LightningModule):
                 )
                 batch["labels"] = self._insert_tokens_2d(batch["labels"], ignore, insert_positions)
 
-        return batch, target_texts, lat, lon
+        return batch, target_texts, lat, lon, non_rgb_imagery
 
     def _set_datamodule_collator(self):
         """Attach the collator to the active datamodule once it exists."""
@@ -479,7 +511,7 @@ class Qwen3VLModule(L.LightningModule):
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Validation step with loss computation and optional generation metrics."""
-        batch, target_texts, _, _ = self._prepare_model_inputs(batch)
+        batch, target_texts, _, _, _ = self._prepare_model_inputs(batch)
         with torch.no_grad():
             outputs = self.model(**batch)
 
@@ -515,7 +547,7 @@ class Qwen3VLModule(L.LightningModule):
 
     def test_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Test step — always generates and accumulates captioning metrics."""
-        batch, target_texts, lat, lon = self._prepare_model_inputs(batch)
+        batch, target_texts, lat, lon, _ = self._prepare_model_inputs(batch)
         with torch.no_grad():
             outputs = self.model(**batch)
 
@@ -572,12 +604,17 @@ class Qwen3VLModule(L.LightningModule):
         decay_params = []
         no_decay_params = []
 
-        # Collect params from model + location_modality_projection (if present)
+        # Collect params from model + projection modules (if present)
         all_named_params = list(self.model.named_parameters())
         if self.location_modality_projection is not None:
             all_named_params.extend(
                 (f"location_modality_projection.{n}", p)
                 for n, p in self.location_modality_projection.named_parameters()
+            )
+        if self.non_rgb_modality_projection is not None:
+            all_named_params.extend(
+                (f"non_rgb_modality_projection.{n}", p)
+                for n, p in self.non_rgb_modality_projection.named_parameters()
             )
 
         for name, param in all_named_params:

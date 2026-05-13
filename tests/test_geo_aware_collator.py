@@ -45,6 +45,71 @@ class TestGeoAwareCollator(unittest.TestCase):
         self.assertTrue(torch.equal(batch["lat"], torch.tensor([10.5], dtype=torch.float64)))
         self.assertTrue(torch.equal(batch["lon"], torch.tensor([20.5], dtype=torch.float64)))
 
+    def test_re_attaches_non_rgb_tensor_without_sending_it_to_unsloth(self) -> None:
+        captured = {}
+
+        def inner_collator(cleaned):
+            captured["cleaned"] = cleaned
+            return {"input_ids": torch.tensor([[1, 2, 3], [4, 5, 6]])}
+
+        collator = GeoAwareCollator(inner_collator, include_coordinates=False)
+        first_non_rgb = torch.ones(3, 2, 2)
+        second_non_rgb = torch.zeros(3, 2, 2)
+
+        batch = collator(
+            [
+                {
+                    "image": object(),
+                    "input_text": "Describe image A.",
+                    "target_texts": ["caption a"],
+                    "lat": 10.5,
+                    "lon": 20.5,
+                    "non_rgb_imagery": first_non_rgb,
+                    "non_rgb_bands": ["VV", "VH", "B04", "B03", "B02"],
+                },
+                {
+                    "image": object(),
+                    "input_text": "Describe image B.",
+                    "target_texts": ["caption b"],
+                    "lat": -1.0,
+                    "lon": 42.0,
+                    "non_rgb_imagery": second_non_rgb,
+                    "non_rgb_bands": ["VV", "VH", "B04", "B03", "B02"],
+                },
+            ]
+        )
+
+        self.assertNotIn("non_rgb_imagery", captured["cleaned"][0])
+        self.assertTrue(torch.equal(
+            batch["non_rgb_imagery"],
+            torch.stack([first_non_rgb, second_non_rgb], dim=0),
+        ))
+        self.assertEqual(batch["non_rgb_bands"], ["VV", "VH", "B04", "B03", "B02"])
+
+    def test_rejects_partial_non_rgb_batches(self) -> None:
+        collator = GeoAwareCollator(lambda cleaned: {})
+
+        with self.assertRaisesRegex(ValueError, "Either every sample or no sample"):
+            collator(
+                [
+                    {
+                        "image": object(),
+                        "input_text": "Describe image A.",
+                        "target_texts": ["caption a"],
+                        "lat": 10.5,
+                        "lon": 20.5,
+                        "non_rgb_imagery": torch.ones(3, 2, 2),
+                    },
+                    {
+                        "image": object(),
+                        "input_text": "Describe image B.",
+                        "target_texts": ["caption b"],
+                        "lat": -1.0,
+                        "lon": 42.0,
+                    },
+                ]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

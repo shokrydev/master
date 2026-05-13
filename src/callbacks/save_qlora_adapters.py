@@ -6,7 +6,7 @@ from safetensors.torch import save_file
 
 
 class SaveQLoRAAdaptersCallback(Callback):
-    """Save the adapter directory and optional location projection for the best run."""
+    """Save the adapter directory and optional projection modules for the best run."""
 
     def __init__(
         self,
@@ -41,6 +41,13 @@ class SaveQLoRAAdaptersCallback(Callback):
             save_file(location_projection.state_dict(), projection_path)
         elif projection_path.exists():
             projection_path.unlink()
+
+        non_rgb_projection_path = self.dirpath / "non_rgb_modality_projection.safetensors"
+        non_rgb_projection = getattr(pl_module, "non_rgb_modality_projection", None)
+        if non_rgb_projection is not None:
+            save_file(non_rgb_projection.state_dict(), non_rgb_projection_path)
+        elif non_rgb_projection_path.exists():
+            non_rgb_projection_path.unlink()
 
         self._saved_once = True
         pl_module.print(f"Saved QLoRA adapters to {self.dirpath}")

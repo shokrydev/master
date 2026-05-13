@@ -101,6 +101,7 @@ def _install_captioning_stub():
 def _build_encoder_test_module(num_location_tokens: int = 2):
     module = object.__new__(Qwen3VLModule)
     module.loc_mode = "loc_embed"
+    module.non_rgb_mode = "ignore"
     module.num_location_tokens = num_location_tokens
     module.device = torch.device("cpu")
     module._location_insertion_state = None
@@ -172,6 +173,46 @@ class InsertTokenHelpersTest(unittest.TestCase):
         )
         self.assertTrue(torch.equal(out, expected))
 
+    def test_insert_projected_tokens_updates_decoder_kwargs(self):
+        module = object.__new__(Qwen3VLModule)
+        kwargs = {
+            "inputs_embeds": torch.tensor(
+                [
+                    [[1.0], [2.0], [3.0]],
+                    [[10.0], [11.0], [12.0]],
+                ]
+            ),
+            "attention_mask": torch.tensor([[1, 1, 1], [1, 1, 1]]),
+            "position_ids": torch.tensor(
+                [
+                    [[0, 1, 2], [5, 6, 7]],
+                    [[10, 11, 12], [15, 16, 17]],
+                    [[20, 21, 22], [25, 26, 27]],
+                ]
+            ),
+            "visual_pos_masks": torch.tensor([[False, True, True], [False, True, True]]),
+        }
+        tokens = torch.tensor([[[90.0], [91.0]], [[80.0], [81.0]]])
+        positions = torch.tensor([1, 3])
+
+        module._insert_projected_tokens_in_kwargs(kwargs, tokens, positions)
+
+        expected_embeds = torch.tensor(
+            [
+                [[1.0], [90.0], [91.0], [2.0], [3.0]],
+                [[10.0], [11.0], [12.0], [80.0], [81.0]],
+            ]
+        )
+        expected_attention = torch.tensor([[1, 1, 1, 1, 1], [1, 1, 1, 1, 1]])
+        expected_visual_mask = torch.tensor(
+            [[False, False, False, True, True], [False, True, True, False, False]]
+        )
+
+        self.assertTrue(torch.equal(kwargs["inputs_embeds"], expected_embeds))
+        self.assertTrue(torch.equal(kwargs["attention_mask"], expected_attention))
+        self.assertTrue(torch.equal(kwargs["visual_pos_masks"], expected_visual_mask))
+        self.assertEqual(kwargs["position_ids"].shape, (3, 2, 5))
+
 
 class PrepareModelInputsTest(unittest.TestCase):
     def test_prepare_model_inputs_inserts_ignore_labels_at_visual_boundary(self):
@@ -185,7 +226,7 @@ class PrepareModelInputsTest(unittest.TestCase):
             "target_texts": [["a"], ["b"]],
         }
 
-        model_batch, target_texts, lat, lon = module._prepare_model_inputs(batch)
+        model_batch, target_texts, lat, lon, non_rgb_imagery = module._prepare_model_inputs(batch)
 
         expected_labels = torch.tensor(
             [[11, 12, -100, -100, 13, 14, 15], [21, -100, -100, 22, 23, 24, 25]]
@@ -195,6 +236,8 @@ class PrepareModelInputsTest(unittest.TestCase):
         self.assertEqual(target_texts, [["a"], ["b"]])
         self.assertTrue(torch.equal(lat, torch.tensor([52.5, -33.9], dtype=torch.float64)))
         self.assertTrue(torch.equal(lon, torch.tensor([13.4, 151.2], dtype=torch.float64)))
+        self.assertIsNone(non_rgb_imagery["tensor"])
+        self.assertIsNone(non_rgb_imagery["bands"])
 
     def test_prepare_model_inputs_falls_back_to_sequence_end_without_visual_tokens(self):
         module = _build_encoder_test_module(num_location_tokens=1)
@@ -206,7 +249,7 @@ class PrepareModelInputsTest(unittest.TestCase):
             "lon": torch.tensor([2.0], dtype=torch.float64),
         }
 
-        model_batch, _, _, _ = module._prepare_model_inputs(batch)
+        model_batch, _, _, _, _ = module._prepare_model_inputs(batch)
 
         expected_labels = torch.tensor([[11, 12, 13, -100, -100, -100]])
         self.assertTrue(torch.equal(model_batch["labels"], expected_labels))
@@ -215,6 +258,7 @@ class PrepareModelInputsTest(unittest.TestCase):
     def test_prepare_model_inputs_is_invariant_for_non_encoder_modes(self):
         module = object.__new__(Qwen3VLModule)
         module.loc_mode = "loc_text"
+        module.non_rgb_mode = "ignore"
         module.num_location_tokens = 2
         module.device = torch.device("cpu")
         module._location_insertion_state = None
@@ -226,15 +270,40 @@ class PrepareModelInputsTest(unittest.TestCase):
             "lat": torch.tensor([1.0], dtype=torch.float64),
             "lon": torch.tensor([2.0], dtype=torch.float64),
             "target_texts": [["ref"]],
+            "non_rgb_imagery": torch.ones(1, 3, 2, 2),
+            "non_rgb_bands": ["VV", "VH", "B04", "B03", "B02"],
         }
 
-        model_batch, target_texts, lat, lon = module._prepare_model_inputs(batch)
+        model_batch, target_texts, lat, lon, non_rgb_imagery = module._prepare_model_inputs(batch)
 
         self.assertTrue(torch.equal(model_batch["labels"], torch.tensor([[11, 12, 13]])))
+        self.assertNotIn("non_rgb_imagery", model_batch)
+        self.assertNotIn("non_rgb_bands", model_batch)
+        self.assertTrue(torch.equal(non_rgb_imagery["tensor"], torch.ones(1, 3, 2, 2)))
+        self.assertEqual(non_rgb_imagery["bands"], ["VV", "VH", "B04", "B03", "B02"])
         self.assertIsNone(module._location_insertion_state)
         self.assertEqual(target_texts, [["ref"]])
         self.assertTrue(torch.equal(lat, torch.tensor([1.0], dtype=torch.float64)))
         self.assertTrue(torch.equal(lon, torch.tensor([2.0], dtype=torch.float64)))
+
+    def test_prepare_model_inputs_rejects_unimplemented_non_rgb_embed_mode(self):
+        module = object.__new__(Qwen3VLModule)
+        module.loc_mode = "no_loc"
+        module.non_rgb_mode = "embed"
+        module.num_location_tokens = 1
+        module.device = torch.device("cpu")
+        module._location_insertion_state = None
+
+        batch = {
+            "input_ids": torch.tensor([[101, 102, 103]]),
+            "attention_mask": torch.tensor([[1, 1, 1]]),
+            "labels": torch.tensor([[11, 12, 13]]),
+            "non_rgb_imagery": torch.ones(1, 3, 2, 2),
+            "non_rgb_bands": ["VV", "VH", "B04", "B03", "B02"],
+        }
+
+        with self.assertRaisesRegex(NotImplementedError, "non_rgb_mode='embed'"):
+            module._prepare_model_inputs(batch)
 
 
 class AdapterArtifactSetupTest(unittest.TestCase):
@@ -251,6 +320,10 @@ class AdapterArtifactSetupTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "adapter_dir"):
             module.setup("validate")
+
+    def test_invalid_non_rgb_mode_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported non_rgb_mode"):
+            Qwen3VLModule(non_rgb_mode="spectral")
 
     def test_validate_loads_saved_adapters_without_wrapping_peft_again(self):
         _install_captioning_stub()

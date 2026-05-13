@@ -82,6 +82,7 @@ model:
     system_prompt: You are a remote sensing image analysis assistant.
 
     loc_mode: no_loc
+    non_rgb_mode: ignore
 
 data:
   class_path: src.data_modules.GAIADataModule

@@ -6,6 +6,7 @@ https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/blob/main
 
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import Literal
 
 import lmdb
 import numpy as np
@@ -23,6 +24,7 @@ except ImportError:
 
 _s1_bandnames = ["VV", "VH"]
 _s2_bandnames = ["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B09", "B11", "B12"]
+_valid_bandnames = set(_s1_bandnames + _s2_bandnames)
 _predefined_bandcombinations = {
     "RGB": ["B04", "B03", "B02"],
     "S2-10m20m": ["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B11", "B12"],
@@ -30,22 +32,125 @@ _predefined_bandcombinations = {
     "all":  _s1_bandnames + _s2_bandnames,
 }
 _rgb_band_order = ["B04", "B03", "B02"]
+RGBRenderMode = Literal["copernicus", "quantile"]
+_copernicus_rgb_scale = 3558.0
+_default_rgb_quantile = 0.90
+
+"""
+Band statistics for BigEarthNet v2 (including S1 stats from v1) after
+interpolating images to 120x120 with nearest-neighbor interpolation.
+The statistics were calculated on the official train split.
+"""
+
+means = {
+    "B01": 361.0767822265625,
+    "B02": 438.3720703125,
+    "B03": 614.0556640625,
+    "B04": 588.4096069335938,
+    "B05": 942.8433227539062,
+    "B06": 1769.931640625,
+    "B07": 2049.551513671875,
+    "B08": 2193.2919921875,
+    "B09": 2241.455322265625,
+    "B11": 1568.226806640625,
+    "B12": 997.7324829101562,
+    "B8A": 2235.556640625,
+    "VH": -19.352558135986328,
+    "VV": -12.643863677978516,
+}
+stds = {
+    "B01": 575.0687255859375,
+    "B02": 607.02685546875,
+    "B03": 603.2968139648438,
+    "B04": 684.56884765625,
+    "B05": 738.4326782226562,
+    "B06": 1100.4560546875,
+    "B07": 1275.805419921875,
+    "B08": 1369.3717041015625,
+    "B09": 1316.393310546875,
+    "B11": 1070.1612548828125,
+    "B12": 813.5276489257812,
+    "B8A": 1356.5440673828125,
+    "VH": 5.590505599975586,
+    "VV": 5.133493900299072,
+}
+
+
+def _resolve_bands(bands: Iterable[str] | str | None, *, default: str = "all") -> list[str]:
+    if isinstance(bands, str):
+        if bands not in _predefined_bandcombinations:
+            raise ValueError(
+                f"{bands} not in predefined options: {_predefined_bandcombinations.keys()}"
+            )
+        resolved = list(_predefined_bandcombinations[bands])
+    elif isinstance(bands, Iterable):
+        resolved = list(bands)
+    elif bands is None:
+        resolved = list(_predefined_bandcombinations[default])
+    else:
+        raise TypeError(f"Unsupported bands value: {bands!r}")
+
+    invalid = [band for band in resolved if band not in _valid_bandnames]
+    if invalid:
+        raise ValueError(f"Unknown BigEarthNet band names: {invalid}")
+    if not resolved:
+        raise ValueError("At least one BigEarthNet band must be selected")
+    return resolved
+
+
+def _union_bands(*band_groups: Iterable[str]) -> list[str]:
+    bands = []
+    for band_group in band_groups:
+        for band in band_group:
+            if band not in bands:
+                bands.append(band)
+    return bands
+
+
+def _select_bands(
+    image_tensor: torch.Tensor,
+    source_bands: list[str],
+    target_bands: list[str],
+) -> torch.Tensor:
+    missing = [band for band in target_bands if band not in source_bands]
+    if missing:
+        raise ValueError(f"Cannot select missing BigEarthNet bands: {missing}")
+    indices = [source_bands.index(band) for band in target_bands]
+    return image_tensor[indices]
+
+
+def default_non_rgb_transform(mean: list[float], std: list[float]) -> Callable:
+    mean_values = tuple(float(value) for value in mean)
+    std_values = tuple(float(value) for value in std)
+
+    def _normalize(image_tensor: torch.Tensor) -> torch.Tensor:
+        mean_tensor = image_tensor.new_tensor(mean_values).view(-1, 1, 1)
+        std_tensor = image_tensor.new_tensor(std_values).view(-1, 1, 1)
+        return (image_tensor - mean_tensor) / std_tensor
+
+    return _normalize
+
 
 def collate_normalized(batch):
     images = []
+    non_rgb_images = []
     input_texts = []
     target_texts = []
     latitudes = []
     longitudes = []
+    non_rgb_bands = []
 
     for item in batch:
         images.append(item["image"])
+        if "non_rgb_imagery" in item:
+            non_rgb_images.append(item["non_rgb_imagery"])
+            non_rgb_bands.append(item.get("non_rgb_bands"))
         input_texts.append(item["input_text"])
         target_texts.append(item["target_texts"])
         latitudes.append(item["lat"])
         longitudes.append(item["lon"])
 
-    return {
+    collated = {
         "image": images,
         "input_text": input_texts,
         "target_texts": target_texts,
@@ -53,22 +158,44 @@ def collate_normalized(batch):
         "lon": torch.tensor(longitudes, dtype=torch.float64),
     }
 
+    if non_rgb_images:
+        collated["non_rgb_imagery"] = torch.stack(non_rgb_images, dim=0)
+        if all(bands == non_rgb_bands[0] for bands in non_rgb_bands):
+            collated["non_rgb_bands"] = non_rgb_bands[0]
+        else:
+            collated["non_rgb_bands"] = non_rgb_bands
 
-def _sentinel2_rgb_tensor_to_pil(image_tensor: torch.Tensor) -> Image.Image:
-    """Render Sentinel-2 RGB bands into a deterministic PIL image for VLM input.
+    return collated
+
+
+def _sentinel2_rgb_tensor_to_pil(
+    image_tensor: torch.Tensor,
+    *,
+    rgb_render_mode: RGBRenderMode = "copernicus",
+    rgb_quantile: float = _default_rgb_quantile,
+) -> Image.Image:
+    """Render raw Sentinel-2 RGB bands into a deterministic PIL image.
 
     BigEarthNet reflectance values are not stored as byte RGB images. For the
-    shared Qwen/Unsloth path we apply a fixed 0..3000 stretch so the dataset
-    emits an actual RGB image rather than classifier-style normalized tensors.
+    shared Qwen/Unsloth path we emit an actual RGB image rather than
+    classifier-style normalized tensors.
     """
     if image_tensor.ndim != 3 or image_tensor.shape[0] != 3:
         raise ValueError(
             "Expected Sentinel-2 RGB tensor with shape (3, H, W) for VLM image rendering"
         )
+    if rgb_render_mode == "copernicus":
+        digital = (image_tensor / _copernicus_rgb_scale) * 255.0
+    elif rgb_render_mode == "quantile":
+        scale = image_tensor.quantile(rgb_quantile)
+        if not bool(torch.isfinite(scale).item()) or float(scale.item()) <= 0.0:
+            scale = image_tensor.new_tensor(_copernicus_rgb_scale)
+        digital = (image_tensor / scale) * 255.0
+    else:
+        raise ValueError(f"Unsupported RGB render mode: {rgb_render_mode}")
 
-    image_array = image_tensor.detach().cpu().numpy().astype(np.float32)
-    image_array = np.clip(image_array, 0.0, 3000.0) / 3000.0
-    image_array = (image_array * 255.0).round().astype(np.uint8)
+    image_array = digital.clamp(0.0, 255.0).to(torch.uint8)
+    image_array = image_array.detach().cpu().numpy()
     image_array = np.transpose(image_array, (1, 2, 0))
     return Image.fromarray(image_array, mode="RGB")
 
@@ -86,7 +213,7 @@ class BENImageReader:
         self.img_size = img_size
         self.upsample_mode = upsample_mode
         self.image_lmdb_file = image_lmdb_file
-        self.bands = bands
+        self.bands = list(bands)
         self.env = None
 
         info_fn(f"Using bandorder {self.bands}")
@@ -158,9 +285,10 @@ class BENTxTDataset(Dataset):
     PyTorch Dataset for BigEarthNet.txt.
 
     This dataset class loads the textual annotations from BigEarthNet.txt
-    together with RGB Sentinel-2 imagery from BigEarthNet-v2.0 (converted to
-    LMDB format) and emits the shared repo sample schema for the VLM path. It
-    supports various filtering options to create custom dataset splits based on
+    together with Sentinel-1/Sentinel-2 imagery from BigEarthNet-v2.0
+    (converted to LMDB format) and emits the shared repo sample schema for the
+    VLM path plus normalized non-RGB imagery for future S1/S2 towers.
+    It supports various filtering options to create custom dataset splits based on
     textual annotation metadata, such as type or category, or image metadata
     like country, season, and climate zone.
     """
@@ -170,9 +298,11 @@ class BENTxTDataset(Dataset):
             self,
             lmdb_file: str | Path,
             metadata_file: str | Path,
-            bands: Iterable[str] | str | None = "RGB",
+            bands: Iterable[str] | str | None = None,
             img_size: int = 120,
             upsample_mode: str = "nearest",
+            rgb_render_mode: RGBRenderMode = "copernicus",
+            rgb_quantile: float = _default_rgb_quantile,
             types: Iterable[str] | None = None,
             categories: Iterable[str] | None = None,
             countries: Iterable[str] | None = None,
@@ -190,17 +320,24 @@ class BENTxTDataset(Dataset):
         Args:
             lmdb_file: Path to the LMDB file containing the BigEarthNet-v2.0 image data.
             metadata_file: Path to the BigEarthNet.txt Parquet file.
-            bands: Band names to load. The current shared VLM path requires RGB
-                Sentinel-2 bands ('B04', 'B03', 'B02'); defaults to 'RGB'.
+            bands: Sentinel-1/Sentinel-2 band names to normalize and expose. Can be a
+                predefined combination key ('RGB', 'S2-10m20m', 'S1S2-10m20m',
+                'all') or an iterable of band names. Defaults to 'all'.
+                RGB bands are always loaded separately for the VLM image path.
             img_size: Target image size for interpolation (default: 120).
             upsample_mode: Interpolation mode for resizing ('nearest', 'bilinear', 'bicubic', etc.).
                 Default: 'nearest'.
+            rgb_render_mode: How to convert raw RGB reflectance bands into
+                uint8 RGB for the VLM path. 'copernicus' applies the official
+                3558 reflectance scale; 'quantile' applies a per-sample
+                quantile stretch.
+            rgb_quantile: Quantile used when rgb_render_mode='quantile'.
             types: Optional filter for annotation types (e.g., 'binary', 'mcq', 'captioning', 'bounding box').
             categories: Optional filter for annotation categories. See [here](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/sql-console/8okbuKf) for possible type-category combinations or retrieve them by yourself using some kind of database tool on the Parquet file.
             countries: Optional filter for acquisition countries (e.g., 'Austria', 'Belgium', 'Finland', 'Ireland', 'Kosovo', 'Lithuania', 'Luxembourg', 'Portugal', 'Serbia', 'Switzerland').
             seasons: Optional filter for seasons (e.g., 'Spring', 'Summer', 'Fall', 'Winter').
             climate_zones: Optional filter for climate zones. See [here](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/sql-console/3xLT8_u) for possible climate_zones values or retrieve them by yourself using some kind of database tool on the Parquet file.
-            transform: Optional transform applied to the rendered RGB PIL image.
+            transform: Optional transform applied to the non-RGB imagery tensor.
             splits: Optional filter for dataset splits ('train', 'validation', 'test', 'bench').
             point_token: Optional tuple of [start_token, end_token] to wrap <point> tags in text.
             ref_token: Optional tuple of [start_token, end_token] to wrap <ref> tags in text.
@@ -208,17 +345,27 @@ class BENTxTDataset(Dataset):
         """
         super().__init__()
 
-        if isinstance(bands, str):
-            assert bands in _predefined_bandcombinations, f"{bands} not in predefined options: {_predefined_bandcombinations.keys()}"
-            bands = _predefined_bandcombinations[bands]
-        elif isinstance(bands, Iterable):
-            bands = list(bands)
-        elif bands is None:
-            bands = _predefined_bandcombinations["RGB"]
-        else:
-            raise NotImplementedError(f"{bands} is not supported")
+        self.bands = _resolve_bands(bands)
+        if rgb_render_mode not in ("copernicus", "quantile"):
+            raise ValueError(f"Unsupported RGB render mode: {rgb_render_mode}")
+        if not 0.0 < rgb_quantile <= 1.0:
+            raise ValueError("rgb_quantile must be in the interval (0, 1]")
+        self.rgb_render_mode = rgb_render_mode
+        self.rgb_quantile = rgb_quantile
 
-        self.image_reader = BENImageReader(lmdb_file, metadata_file, bands, img_size, upsample_mode, info_fn=info_fn)
+        missing_stats = [band for band in self.bands if band not in means or band not in stds]
+        if missing_stats:
+            raise ValueError(f"Missing BigEarthNet normalization stats for bands: {missing_stats}")
+
+        self.reader_bands = _union_bands(_rgb_band_order, self.bands)
+        self.image_reader = BENImageReader(
+            lmdb_file,
+            metadata_file,
+            self.reader_bands,
+            img_size,
+            upsample_mode,
+            info_fn=info_fn,
+        )
 
         self.text_data = pd.read_parquet(metadata_file)
 
@@ -247,12 +394,6 @@ class BENTxTDataset(Dataset):
         assert len(self.point_token) == 2, "Point tokens must have length 2."
         self.ref_token = ["", ""] if ref_token is None else ref_token
         assert len(self.ref_token) == 2, "Reference tokens must have length 2."
-        self.bands = list(bands)
-        if self.bands != _rgb_band_order:
-            raise ValueError(
-                "BENTxTDataset currently emits VLM-ready shared samples and therefore "
-                "requires RGB Sentinel-2 bands ('B04', 'B03', 'B02')."
-            )
 
     def __len__(self):
         """Return the number of samples in the dataset."""
@@ -268,6 +409,8 @@ class BENTxTDataset(Dataset):
         Returns:
             dict: A dictionary containing:
                 - 'image': RGB PIL image for the shared VLM collator path.
+                - 'non_rgb_imagery': Normalized S1/S2 tensor.
+                - 'non_rgb_bands': Band order of the non-RGB imagery tensor.
                 - 'input_text': The instruction or question for the VLM.
                 - 'target_texts': List containing the expected text output(s).
                 - 'lat': Latitude of the patch center.
@@ -276,12 +419,19 @@ class BENTxTDataset(Dataset):
         sample = self.text_data.iloc[idx]
         img_id = sample.patch_id
         img_data = self.image_reader[img_id]
-        image = _sentinel2_rgb_tensor_to_pil(img_data)
+        rgb_data = _select_bands(img_data, self.reader_bands, _rgb_band_order)
+        non_rgb_imagery = _select_bands(img_data, self.reader_bands, self.bands)
+
+        image = _sentinel2_rgb_tensor_to_pil(
+            rgb_data,
+            rgb_render_mode=self.rgb_render_mode,
+            rgb_quantile=self.rgb_quantile,
+        )
         if self.transform is not None:
-            image = self.transform(image)
+            non_rgb_imagery = self.transform(non_rgb_imagery)
         if not isinstance(image, Image.Image):
             raise TypeError(
-                "BENTxTDataset expects transforms to return a PIL image for the shared VLM path"
+                "BENTxTDataset expects the shared VLM image path to produce a PIL image"
             )
 
         text_in = sample.input.replace("<ref>", self.ref_token[0]).replace("</ref>", self.ref_token[1])
@@ -294,6 +444,8 @@ class BENTxTDataset(Dataset):
 
         return {
             "image": image,
+            "non_rgb_imagery": non_rgb_imagery,
+            "non_rgb_bands": list(self.bands),
             "input_text": text_in,
             "target_texts": [str(output)],
             "lat": float(sample.latitude),
@@ -312,6 +464,7 @@ class BENTxTDataModule(pl.LightningDataModule):
     The module manages:
     - Automatic dataset setup for different training stages
     - Sentinel-2 RGB rendering into PIL images for the shared collator/model path
+    - normalized non-RGB imagery tensors for future specialized vision encoders
     - DataLoader creation with appropriate batch sizes and worker processes
     - GPU pinning when CUDA is available
 
@@ -330,9 +483,11 @@ class BENTxTDataModule(pl.LightningDataModule):
             self,
             image_lmdb_file: str | Path,
             metadata_file: str | Path,
-            bands: Iterable[str] | str | None = "RGB",
+            bands: Iterable[str] | str | None = None,
             img_size: int = 120,
             upsample_mode: str = "nearest",
+            rgb_render_mode: RGBRenderMode = "copernicus",
+            rgb_quantile: float = _default_rgb_quantile,
             types: Iterable[str] | None = None,
             categories: Iterable[str] | None = None,
             countries: Iterable[str] | None = None,
@@ -352,11 +507,18 @@ class BENTxTDataModule(pl.LightningDataModule):
         Args:
             lmdb_file: Path to the LMDB file containing the BigEarthNet-v2.0 image data.
             metadata_file: Path to the BigEarthNet.txt Parquet file.
-            bands: Band names to load. The current shared VLM path requires RGB
-                Sentinel-2 bands ('B04', 'B03', 'B02'); defaults to 'RGB'.
+            bands: Sentinel-1/Sentinel-2 band names to normalize and expose. Can be a
+                predefined combination key ('RGB', 'S2-10m20m', 'S1S2-10m20m',
+                'all') or an iterable of band names. Defaults to 'all'.
+                RGB bands are always loaded separately for the VLM image path.
             img_size: Target image size for interpolation (default: 120).
             upsample_mode: Interpolation mode for resizing ('nearest', 'bilinear', 'bicubic', etc.).
                 Default: 'nearest'.
+            rgb_render_mode: How to convert raw RGB reflectance bands into
+                uint8 RGB for the VLM path. 'copernicus' applies the official
+                3558 reflectance scale; 'quantile' applies a per-sample
+                quantile stretch.
+            rgb_quantile: Quantile used when rgb_render_mode='quantile'.
             types: Optional filter for annotation types (e.g., 'binary', 'mcq', 'captioning', 'bounding box').
             categories: Optional filter for annotation categories. See [here](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/sql-console/KzrmYgF) for possible type-category combinations or retrieve them by yourself using some kind of database tool on the Parquet file.
             countries: Optional filter for acquisition countries (e.g., 'Austria', 'Belgium', 'Finland', 'Ireland', 'Kosovo', 'Lithuania', 'Luxembourg', 'Portugal', 'Serbia', 'Switzerland').
@@ -365,8 +527,8 @@ class BENTxTDataModule(pl.LightningDataModule):
             num_workers_dataloader: Number of worker processes for DataLoaders (default: 4).
                 Set to 0 to disable multiprocessing.
             batch_size: Batch size for DataLoaders (default: 16).
-            image_transforms_train: Optional transform applied to rendered RGB PIL images for training.
-            image_transforms_eval: Optional transform applied to rendered RGB PIL images for evaluation.
+            image_transforms_train: Optional transform applied to normalized non-RGB imagery tensors for training.
+            image_transforms_eval: Optional transform applied to normalized non-RGB imagery tensors for evaluation.
             point_token: Optional tuple of [start_token, end_token] to wrap <point> tags in text.
             ref_token: Optional tuple of [start_token, end_token] to wrap <ref> tags in text.
             info_fn: Optional callback function for logging during initialization.
@@ -377,15 +539,15 @@ class BENTxTDataModule(pl.LightningDataModule):
         self.pin_memory = torch.cuda.is_available()
         self._collator: Callable | None = None
 
-        if isinstance(bands, str):
-            assert bands in _predefined_bandcombinations, f"{bands} not in predefined options: {_predefined_bandcombinations.keys()}"
-            self.bands = _predefined_bandcombinations[bands]
-        elif isinstance(bands, Iterable):
-            self.bands = list(bands)
-        elif bands is None:
-            self.bands = _predefined_bandcombinations["RGB"]
-        else:
-            raise NotImplementedError(f"{bands} is not supported")
+        self.bands = _resolve_bands(bands)
+        if rgb_render_mode not in ("copernicus", "quantile"):
+            raise ValueError(f"Unsupported RGB render mode: {rgb_render_mode}")
+        if not 0.0 < rgb_quantile <= 1.0:
+            raise ValueError("rgb_quantile must be in the interval (0, 1]")
+
+        missing_stats = [band for band in self.bands if band not in means or band not in stds]
+        if missing_stats:
+            raise ValueError(f"Missing BigEarthNet normalization stats for bands: {missing_stats}")
 
         self.ds_kwargs = {
             "lmdb_file": image_lmdb_file,
@@ -393,6 +555,8 @@ class BENTxTDataModule(pl.LightningDataModule):
             "bands": self.bands,
             "img_size": img_size,
             "upsample_mode": upsample_mode,
+            "rgb_render_mode": rgb_render_mode,
+            "rgb_quantile": rgb_quantile,
             "types": types,
             "categories": categories,
             "countries": countries,
@@ -403,11 +567,18 @@ class BENTxTDataModule(pl.LightningDataModule):
             "info_fn": info_fn,
         }
 
-        # The shared Qwen/Unsloth path expects actual images and handles its own
-        # resizing/tokenization. Optional transforms therefore operate on PIL
-        # images and default to None.
-        self.train_transforms = image_transforms_train
-        self.eval_transforms = image_transforms_eval
+        self.mean = [means[band] for band in self.bands]
+        self.std = [stds[band] for band in self.bands]
+
+        # The shared Qwen/Unsloth path gets unnormalized RGB PIL images. These
+        # transforms are for the parallel non-RGB imagery tensor path only.
+        default_transform = default_non_rgb_transform(self.mean, self.std)
+        self.train_transforms = (
+            image_transforms_train if image_transforms_train is not None else default_transform
+        )
+        self.eval_transforms = (
+            image_transforms_eval if image_transforms_eval is not None else default_transform
+        )
 
     def set_collator(self, collator: Callable) -> None:
         self._collator = collator

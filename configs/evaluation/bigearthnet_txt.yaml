@@ -16,12 +16,15 @@ trainer:
 model:
   init_args:
     adapter_dir: ${paths.adapter_dir}
+    non_rgb_mode: ignore
 
 data:
-  class_path: src.data_modules.ben_txt_datamodule.BENTxTDataModule
+  class_path: src.data_modules.BENTxTDataModule
   init_args:
     image_lmdb_file: ${paths.bigearthnet_v2_lmdb_root}
     metadata_file: ${paths.bigearthnet_txt_parquet_path}
-    bands: RGB
+    bands: S1S2-10m20m
+    rgb_render_mode: copernicus
+    rgb_quantile: 0.90
     batch_size: 1
     num_workers_dataloader: 4
