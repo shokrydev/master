@@ -1,7 +1,93 @@
 [project]
-name = "master"
+name = "geovlm"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+description = "Geolocation-Aware Vision-Language Models for Earth Observation"
 requires-python = ">=3.12"
-dependencies = []
+
+dependencies = [
+    # Core ML frameworks
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+    "lightning>=2.2.0",
+    # Unsloth for efficient finetuning
+    "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git",
+    # Transformers and related
+    "transformers>=4.45.0",
+    "accelerate>=0.30.0",
+    "peft>=0.10.0",
+    "bitsandbytes>=0.43.0",
+    # Data handling
+    "datasets>=2.18.0",
+    "pandas>=2.2.0",
+    "pyarrow>=15.0.0",
+    "safetensors>=0.4.0",
+    "webdataset>=1.0.2",
+    # Image processing
+    "pillow>=10.0.0",
+    # CLI and config
+    "jsonargparse[omegaconf]>=4.27.0",
+    "rich>=13.0.0",
+    # Logging
+    "tensorboard>=2.16.0",
+    # Evaluation
+    "torchmetrics>=1.0.0",
+    "pycocoevalcap>=1.2",
+    "rouge-score>=0.1.2",
+    "nltk>=3.8",
+    # Utilities
+    "tqdm>=4.66.0",
+    "numpy>=1.26.0",
+    "requests>=2.31.0",
+    "huggingface_hub>=0.20.0",
+    "reverse_geocoder>=1.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+    "pre-commit>=3.6.0",
+]
+wandb = [
+    "wandb>=0.16.0",
+]
+flash = [
+    "flash-attn>=2.5.0",
+]
+
+[project.scripts]
+vlm-train = "main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
