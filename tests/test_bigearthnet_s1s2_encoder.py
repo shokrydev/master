@@ -1,7 +1,12 @@
+import json
+import importlib.util
+import tempfile
 import unittest
+from pathlib import Path
 
 import torch
 import torch.nn as nn
+from safetensors.torch import save_file
 
 from src.models.bigearthnet_s1s2_encoder import (
     BIGEARTHNET_S1S2_10M20M_BANDS,
@@ -78,6 +83,60 @@ class BigEarthNetS1S2EncoderTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Expected 12 non-RGB channels"):
             encoder(imagery, BIGEARTHNET_S1S2_10M20M_BANDS)
+
+    def test_loads_local_timm_mobilevit_checkpoint(self):
+        if importlib.util.find_spec("timm") is None:
+            self.skipTest("timm is not installed")
+        import timm
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = Path(tmpdir)
+            config = {
+                "timm_model_name": "mobilevit_s",
+                "channels": 12,
+                "classes": 19,
+                "drop_rate": 0.0,
+                "drop_path_rate": 0.0,
+            }
+            (model_dir / "config.json").write_text(json.dumps(config))
+            model = timm.create_model("mobilevit_s", in_chans=12, num_classes=19)
+            state_dict = {
+                f"model.vision_encoder.{key}": value
+                for key, value in model.state_dict().items()
+            }
+            save_file(state_dict, model_dir / "model.safetensors")
+
+            encoder = BigEarthNetS1S2Encoder(model_dir=model_dir, feature_mode="spatial_4x4")
+            imagery = torch.randn(1, 12, 120, 120)
+
+            tokens = encoder(imagery, BIGEARTHNET_S1S2_10M20M_BANDS)
+
+            self.assertEqual(tokens.shape, (1, 16, 640))
+            self.assertEqual(encoder.feature_dim, 640)
+
+    def test_local_checkpoint_loader_warns_for_ignored_non_vision_weights(self):
+        if importlib.util.find_spec("timm") is None:
+            self.skipTest("timm is not installed")
+        import timm
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = Path(tmpdir)
+            config = {
+                "timm_model_name": "mobilevit_s",
+                "channels": 12,
+                "classes": 19,
+            }
+            (model_dir / "config.json").write_text(json.dumps(config))
+            model = timm.create_model("mobilevit_s", in_chans=12, num_classes=19)
+            state_dict = {
+                f"model.vision_encoder.{key}": value
+                for key, value in model.state_dict().items()
+            }
+            state_dict["model.fusion_layer.weight"] = torch.randn(1)
+            save_file(state_dict, model_dir / "model.safetensors")
+
+            with self.assertWarnsRegex(UserWarning, "ignores non-vision checkpoint weights"):
+                BigEarthNetS1S2Encoder(model_dir=model_dir)
 
 
 if __name__ == "__main__":

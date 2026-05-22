@@ -1,5 +1,7 @@
 """Frozen BigEarthNet S1/S2 encoder wrapper."""
 
+import json
+import warnings
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
@@ -7,6 +9,7 @@ from typing import Literal
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from safetensors.torch import load_file
 
 BIGEARTHNET_S1S2_10M20M_BANDS = [
     "VV",
@@ -33,6 +36,9 @@ class BigEarthNetS1S2Encoder(nn.Module):
     logits. `spatial_4x4` preserves a fixed 4x4 grid of MobileViT features,
     while `pooled_prelogit` returns the encoder's pooled representation before
     the classifier layer.
+
+    The local checkpoint loader uses the `model.vision_encoder.` subtree and
+    loads it strictly into a timm MobileViT encoder.
     """
 
     def __init__(
@@ -66,19 +72,60 @@ class BigEarthNetS1S2Encoder(nn.Module):
     @staticmethod
     def _load_model(model_dir: str | Path | None) -> nn.Module:
         try:
-            from reben_publication.BigEarthNetv2_0_ImageClassifier import (
-                BigEarthNetv2_0_ImageClassifier,
-            )
+            import timm
         except ImportError as exc:
             raise ImportError(
-                "BigEarthNetS1S2Encoder requires the official reBEN loader "
-                "package and configilm to load model_dir."
+                "BigEarthNetS1S2Encoder requires timm to load a local model_dir."
             ) from exc
 
-        return BigEarthNetv2_0_ImageClassifier.from_pretrained(str(model_dir))
+        if model_dir is None:
+            raise ValueError("model_dir is required when no model is injected")
+        model_path = Path(model_dir)
+        config_path = model_path / "config.json"
+        weights_path = model_path / "model.safetensors"
+        if not config_path.exists() or not weights_path.exists():
+            raise FileNotFoundError(
+                "BigEarthNetS1S2Encoder expected config.json and model.safetensors "
+                f"under {model_path}"
+            )
+
+        with config_path.open() as f:
+            config = json.load(f)
+
+        vision_encoder = timm.create_model(
+            config.get("timm_model_name", "mobilevit_s"),
+            in_chans=int(config.get("channels", len(BIGEARTHNET_S1S2_10M20M_BANDS))),
+            num_classes=int(config.get("classes", 19)),
+            drop_rate=float(config.get("drop_rate", 0.0)),
+            drop_path_rate=float(config.get("drop_path_rate", 0.0)),
+        )
+        state_dict = load_file(weights_path)
+        non_vision_keys = [
+            key for key in state_dict if not key.startswith("model.vision_encoder.")
+        ]
+        if non_vision_keys:
+            warnings.warn(
+                "BigEarthNetS1S2Encoder ignores non-vision checkpoint weights "
+                f"such as {non_vision_keys[:5]}",
+                stacklevel=2,
+            )
+        vision_state_dict = {
+            key.removeprefix("model.vision_encoder."): value
+            for key, value in state_dict.items()
+            if key.startswith("model.vision_encoder.")
+        }
+        missing, unexpected = vision_encoder.load_state_dict(vision_state_dict, strict=True)
+        if missing or unexpected:
+            raise RuntimeError(
+                "Failed to load BigEarthNet vision encoder weights: "
+                f"missing={missing}, unexpected={unexpected}"
+            )
+        return vision_encoder
 
     @staticmethod
     def _get_vision_encoder(model: nn.Module) -> nn.Module:
+        if hasattr(model, "forward_features"):
+            return model
         if hasattr(model, "vision_encoder"):
             return model.vision_encoder
         inner_model = getattr(model, "model", None)
