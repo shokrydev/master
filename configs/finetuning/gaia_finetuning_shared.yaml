@@ -8,6 +8,7 @@ paths:
   adapter_dir: ${oc.env:FINETUNING_ADAPTER_DIR,${paths.output_dir}/adapter}
   gaia_root: ${oc.env:GAIA_ROOT,data/gaia}
   satclip_checkpoint_path: ${oc.env:SATCLIP_CHECKPOINT_PATH,data/satclip/satclip-vit16-l10.ckpt}
+  bigearthnet_encoder_dir: ${oc.env:BIGEARTHNET_ENCODER_DIR,data/bigearthnet_encoders/mobilevit_s-all-v0.2.0}
 
 trainer:
   accelerator: auto
@@ -82,7 +83,12 @@ model:
     system_prompt: You are a remote sensing image analysis assistant.
 
     loc_mode: no_loc
-    non_rgb_mode: ignore
+    non_rgb_conditioning: disabled
+    non_rgb_encoder_dir: null
+    non_rgb_encoder_feature_dim: null
+    non_rgb_feature_mode: spatial_4x4
+    non_rgb_spatial_pool_size: 4
+    num_non_rgb_tokens: 16
 
 data:
   class_path: src.data_modules.GAIADataModule

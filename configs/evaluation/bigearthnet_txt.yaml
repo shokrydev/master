@@ -8,6 +8,7 @@ paths:
   adapter_dir: ${oc.env:EVAL_ADAPTER_DIR,""}
   bigearthnet_v2_lmdb_root: ${oc.env:BIGEARTHNET_V2_LMDB_ROOT,""}
   bigearthnet_txt_parquet_path: ${oc.env:BIGEARTHNET_TXT_PARQUET_PATH,""}
+  bigearthnet_encoder_dir: ${oc.env:BIGEARTHNET_ENCODER_DIR,data/bigearthnet_encoders/mobilevit_s-all-v0.2.0}
 
 trainer:
   default_root_dir: ${paths.output_dir}
@@ -16,7 +17,12 @@ trainer:
 model:
   init_args:
     adapter_dir: ${paths.adapter_dir}
-    non_rgb_mode: ignore
+    non_rgb_conditioning: disabled
+    non_rgb_encoder_dir: null
+    non_rgb_encoder_feature_dim: null
+    non_rgb_feature_mode: spatial_4x4
+    non_rgb_spatial_pool_size: 4
+    num_non_rgb_tokens: 16
 
 data:
   class_path: src.data_modules.BENTxTDataModule

@@ -57,7 +57,12 @@ class Qwen3VLModule(L.LightningModule):
         val_generate_batches: int = 0,
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
         loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
-        non_rgb_mode: Literal["ignore", "embed"] = "ignore",
+        non_rgb_conditioning: Literal["disabled", "enabled"] = "disabled",
+        non_rgb_encoder_dir: str | None = None,
+        non_rgb_encoder_feature_dim: int | None = None,
+        non_rgb_feature_mode: Literal["spatial_4x4", "pooled_prelogit"] = "spatial_4x4",
+        non_rgb_spatial_pool_size: int = 4,
+        num_non_rgb_tokens: int = 16,
         satclip_checkpoint: str | None = None,
         satclip_dim: int = 256,
         num_location_tokens: int = 1,
@@ -90,8 +95,18 @@ class Qwen3VLModule(L.LightningModule):
                 (0 = no generation metrics, -1 = all batches). Test always generates.
             system_prompt: Optional system message injected during chat formatting.
             loc_mode: Location conditioning mode ("no_loc", "loc_text", "loc_embed")
-            non_rgb_mode: Non-RGB imagery mode. "ignore" strips non-RGB imagery
-                before Qwen; "embed" is reserved for the future non-RGB tower.
+            non_rgb_conditioning: Whether non-RGB imagery conditions Qwen.
+                "disabled" strips non-RGB imagery before Qwen; "enabled" activates
+                the non-RGB encoder/projection path.
+            non_rgb_encoder_dir: Local Hugging Face-style directory for the frozen
+                non-RGB encoder. Expected to contain config.json and model.safetensors.
+            non_rgb_encoder_feature_dim: Feature dimension returned by the frozen
+                non-RGB encoder. Discovered from the encoder API rather than assumed.
+            non_rgb_feature_mode: Feature extraction mode for the non-RGB encoder.
+                "spatial_4x4" preserves a fixed 4x4 feature grid; "pooled_prelogit"
+                uses the pooled MobileViT embedding before the classifier.
+            non_rgb_spatial_pool_size: Spatial grid size for "spatial_4x4" mode.
+            num_non_rgb_tokens: Number of projected non-RGB imagery tokens to insert.
             satclip_checkpoint: Path to SatCLIP checkpoint (required for encoder mode)
             satclip_dim: SatCLIP embedding dimension
             num_location_tokens: Number of location tokens to insert before the visual block (encoder mode)
@@ -99,8 +114,12 @@ class Qwen3VLModule(L.LightningModule):
         """
         super().__init__()
 
-        if non_rgb_mode not in {"ignore", "embed"}:
-            raise ValueError(f"Unsupported non_rgb_mode: {non_rgb_mode}")
+        if non_rgb_conditioning not in {"disabled", "enabled"}:
+            raise ValueError(f"Unsupported non_rgb_conditioning: {non_rgb_conditioning}")
+        if non_rgb_feature_mode not in {"spatial_4x4", "pooled_prelogit"}:
+            raise ValueError(f"Unsupported non_rgb_feature_mode: {non_rgb_feature_mode}")
+        if non_rgb_spatial_pool_size <= 0:
+            raise ValueError("non_rgb_spatial_pool_size must be positive")
 
         self.save_hyperparameters()
 
@@ -124,7 +143,12 @@ class Qwen3VLModule(L.LightningModule):
         self.val_generate_batches = val_generate_batches
         self.system_prompt = system_prompt
         self.loc_mode = loc_mode
-        self.non_rgb_mode = non_rgb_mode
+        self.non_rgb_conditioning = non_rgb_conditioning
+        self.non_rgb_encoder_dir = str(non_rgb_encoder_dir) if non_rgb_encoder_dir else None
+        self.non_rgb_encoder_feature_dim = non_rgb_encoder_feature_dim
+        self.non_rgb_feature_mode = non_rgb_feature_mode
+        self.non_rgb_spatial_pool_size = non_rgb_spatial_pool_size
+        self.num_non_rgb_tokens = num_non_rgb_tokens
         self.satclip_checkpoint = satclip_checkpoint
         self.satclip_dim = satclip_dim
         self.num_location_tokens = num_location_tokens
@@ -411,12 +435,12 @@ class Qwen3VLModule(L.LightningModule):
             "tensor": batch.pop("non_rgb_imagery", None),
             "bands": batch.pop("non_rgb_bands", None),
         }
-        if self.non_rgb_mode == "embed":
+        if self.non_rgb_conditioning == "enabled":
             raise NotImplementedError(
-                "non_rgb_mode='embed' requires a non-RGB imagery encoder and token projection"
+                "non_rgb_conditioning='enabled' requires Qwen token insertion wiring"
             )
-        if self.non_rgb_mode != "ignore":
-            raise ValueError(f"Unsupported non_rgb_mode: {self.non_rgb_mode}")
+        if self.non_rgb_conditioning != "disabled":
+            raise ValueError(f"Unsupported non_rgb_conditioning: {self.non_rgb_conditioning}")
 
         if self.loc_mode == "loc_embed":
             if lat is None or lon is None:
