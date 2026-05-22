@@ -10,7 +10,7 @@ from src.data_modules.ben_txt_datamodule import (
 
 
 class TestBENTxTDataBoundary(unittest.TestCase):
-    def test_sentinel2_rgb_tensor_is_rendered_to_pil(self) -> None:
+    def test_sentinel2_rgb_tensor_is_rendered_to_pil_with_copernicus_scale(self) -> None:
         tensor = torch.tensor(
             [
                 [[0.0, 1500.0], [3000.0, 4500.0]],
@@ -25,8 +25,8 @@ class TestBENTxTDataBoundary(unittest.TestCase):
         self.assertIsInstance(image, Image.Image)
         self.assertEqual(image.mode, "RGB")
         self.assertEqual(image.size, (2, 2))
-        self.assertEqual(image.getpixel((0, 0)), (0, 255, 128))
-        self.assertEqual(image.getpixel((1, 1)), (255, 128, 255))
+        self.assertEqual(image.getpixel((0, 0)), (0, 215, 107))
+        self.assertEqual(image.getpixel((1, 1)), (255, 107, 215))
 
     def test_normalized_collate_preserves_shared_sample_fields(self) -> None:
         image = Image.new("RGB", (4, 4), color=(12, 34, 56))
