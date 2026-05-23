@@ -45,6 +45,37 @@ class TestGeoAwareCollator(unittest.TestCase):
         self.assertTrue(torch.equal(batch["lat"], torch.tensor([10.5], dtype=torch.float64)))
         self.assertTrue(torch.equal(batch["lon"], torch.tensor([20.5], dtype=torch.float64)))
 
+    def test_appends_location_text_without_changing_native_prompt_source(self) -> None:
+        captured = {}
+
+        def inner_collator(cleaned):
+            captured["cleaned"] = cleaned
+            return {"input_ids": torch.tensor([[1, 2, 3]])}
+
+        collator = GeoAwareCollator(
+            inner_collator,
+            location_text_template="Capture location: latitude {lat:.4f}, longitude {lon:.4f}.",
+        )
+
+        collator(
+            [
+                {
+                    "image": object(),
+                    "input_text": "Which land cover classes are present?",
+                    "target_texts": ["Urban fabric"],
+                    "lat": 52.12346,
+                    "lon": 13.98765,
+                }
+            ]
+        )
+
+        user_text = captured["cleaned"][0]["messages"][0]["content"][0]["text"]
+        self.assertEqual(
+            user_text,
+            "Which land cover classes are present?\n"
+            "Capture location: latitude 52.1235, longitude 13.9877.",
+        )
+
     def test_re_attaches_non_rgb_tensor_without_sending_it_to_unsloth(self) -> None:
         captured = {}
 

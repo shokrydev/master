@@ -1,9 +1,6 @@
-# Override for the loc_text condition.
+# Override for text-token location conditioning.
 
 model:
   init_args:
     loc_mode: loc_text
-
-data:
-  init_args:
-    user_prompt: "Describe this remote sensing image in detail. The capture location is latitude {lat:.4f}, longitude {lon:.4f}."
+    location_text_template: "Capture location: latitude {lat:.4f}, longitude {lon:.4f}."

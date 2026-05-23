@@ -57,6 +57,7 @@ class Qwen3VLModule(L.LightningModule):
         val_generate_batches: int = 0,
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
         loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
+        location_text_template: str | None = None,
         non_rgb_conditioning: Literal["disabled", "enabled"] = "disabled",
         non_rgb_encoder_dir: str | None = None,
         non_rgb_encoder_feature_dim: int | None = None,
@@ -95,6 +96,8 @@ class Qwen3VLModule(L.LightningModule):
                 (0 = no generation metrics, -1 = all batches). Test always generates.
             system_prompt: Optional system message injected during chat formatting.
             loc_mode: Location conditioning mode ("no_loc", "loc_text", "loc_embed")
+            location_text_template: Format string appended to the user prompt when
+                `loc_mode="loc_text"`. Receives `lat` and `lon`.
             non_rgb_conditioning: Whether non-RGB imagery conditions Qwen.
                 "disabled" strips non-RGB imagery before Qwen; "enabled" activates
                 the non-RGB encoder/projection path.
@@ -114,8 +117,14 @@ class Qwen3VLModule(L.LightningModule):
         """
         super().__init__()
 
+        if loc_mode not in {"no_loc", "loc_text", "loc_embed"}:
+            raise ValueError(f"Unsupported loc_mode: {loc_mode}")
         if non_rgb_conditioning not in {"disabled", "enabled"}:
             raise ValueError(f"Unsupported non_rgb_conditioning: {non_rgb_conditioning}")
+        if loc_mode == "loc_text" and not location_text_template:
+            raise ValueError("loc_mode='loc_text' requires location_text_template")
+        if loc_mode != "loc_text" and location_text_template is not None:
+            raise ValueError("location_text_template is only used when loc_mode='loc_text'")
         if non_rgb_feature_mode not in {"spatial_4x4", "pooled_prelogit"}:
             raise ValueError(f"Unsupported non_rgb_feature_mode: {non_rgb_feature_mode}")
         if non_rgb_spatial_pool_size <= 0:
@@ -151,6 +160,7 @@ class Qwen3VLModule(L.LightningModule):
         self.val_generate_batches = val_generate_batches
         self.system_prompt = system_prompt
         self.loc_mode = loc_mode
+        self.location_text_template = location_text_template
         self.non_rgb_conditioning = non_rgb_conditioning
         self.non_rgb_encoder_dir = str(non_rgb_encoder_dir) if non_rgb_encoder_dir else None
         self.non_rgb_encoder_feature_dim = non_rgb_encoder_feature_dim
@@ -235,6 +245,9 @@ class Qwen3VLModule(L.LightningModule):
             base_collator,
             include_coordinates=self.loc_mode in {"loc_text", "loc_embed"},
             system_prompt=self.system_prompt,
+            location_text_template=(
+                self.location_text_template if self.loc_mode == "loc_text" else None
+            ),
         )
         self._set_datamodule_collator()
 

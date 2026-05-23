@@ -439,6 +439,18 @@ class AdapterArtifactSetupTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported non_rgb_conditioning"):
             Qwen3VLModule(non_rgb_conditioning="spectral")
 
+    def test_invalid_loc_mode_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported loc_mode"):
+            Qwen3VLModule(loc_mode="coordinates")
+
+    def test_loc_text_requires_location_text_template(self):
+        with self.assertRaisesRegex(ValueError, "location_text_template"):
+            Qwen3VLModule(loc_mode="loc_text")
+
+    def test_location_text_template_requires_loc_text_mode(self):
+        with self.assertRaisesRegex(ValueError, "loc_mode='loc_text'"):
+            Qwen3VLModule(location_text_template="lat {lat}")
+
     def test_invalid_non_rgb_feature_mode_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unsupported non_rgb_feature_mode"):
             Qwen3VLModule(non_rgb_feature_mode="spatial_tokens")

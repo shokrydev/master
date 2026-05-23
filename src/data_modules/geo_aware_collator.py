@@ -25,10 +25,12 @@ class GeoAwareCollator:
         inner_collator,
         include_coordinates: bool = False,
         system_prompt: str | None = None,
+        location_text_template: str | None = None,
     ):
         self.inner_collator = inner_collator
         self.include_coordinates = include_coordinates
         self.system_prompt = system_prompt
+        self.location_text_template = location_text_template
 
     def _to_messages(self, image: Any, input_text: str, target_text: str) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
@@ -48,6 +50,12 @@ class GeoAwareCollator:
             },
         ])
         return messages
+
+    def _with_location_text(self, input_text: str, lat: float, lon: float) -> str:
+        if not self.location_text_template:
+            return input_text
+        location_text = self.location_text_template.format(lat=lat, lon=lon)
+        return f"{input_text}\n{location_text}"
 
     def __call__(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         # Convert normalized samples to the message format expected by Unsloth.
@@ -77,6 +85,7 @@ class GeoAwareCollator:
             lats.append(lat)
             lons.append(lon)
             target_texts_batch.append(targets)
+            input_text = self._with_location_text(input_text, lat, lon)
             if has_non_rgb_imagery[0]:
                 non_rgb_image = item["non_rgb_imagery"]
                 if not isinstance(non_rgb_image, torch.Tensor):
