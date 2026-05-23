@@ -1,0 +1,29 @@
+# Smoke override for BigEarthNet.txt finetuning.
+#
+# Compose after configs/finetuning/bigearthnet_txt_shared.yaml and, if desired,
+# loc_text.yaml or loc_embed.yaml.
+
+paths:
+  output_dir: ${oc.env:FINETUNING_OUTPUT_DIR,./outputs/bigearthnet_smoke}
+  adapter_dir: ${oc.env:FINETUNING_ADAPTER_DIR,${paths.output_dir}/adapter}
+
+trainer:
+  max_steps: 5
+  accumulate_grad_batches: 1
+
+  limit_train_batches: 5
+  limit_val_batches: 1
+  val_check_interval: 1.0
+  check_val_every_n_epoch: 1
+
+  log_every_n_steps: 1
+
+model:
+  init_args:
+    max_new_tokens: 32
+    val_generate_batches: 1
+
+data:
+  init_args:
+    batch_size: 1
+    num_workers_dataloader: 0

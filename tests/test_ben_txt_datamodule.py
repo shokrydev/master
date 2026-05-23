@@ -3,10 +3,7 @@ import unittest
 import torch
 from PIL import Image
 
-from src.data_modules.ben_txt_datamodule import (
-    _sentinel2_rgb_tensor_to_pil,
-    collate_normalized,
-)
+from src.data_modules.ben_txt_datamodule import _sentinel2_rgb_tensor_to_pil, collate_normalized
 
 
 class TestBENTxTDataBoundary(unittest.TestCase):

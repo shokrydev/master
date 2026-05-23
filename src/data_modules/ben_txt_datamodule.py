@@ -434,6 +434,9 @@ class BENTxTDataset(Dataset):
                 "BENTxTDataset expects the shared VLM image path to produce a PIL image"
             )
 
+        lat = float(sample.latitude)
+        lon = float(sample.longitude)
+
         text_in = sample.input.replace("<ref>", self.ref_token[0]).replace("</ref>", self.ref_token[1])
         text_in = text_in.replace("<point>", self.point_token[0]).replace("</point>", self.point_token[1])
 
@@ -448,8 +451,8 @@ class BENTxTDataset(Dataset):
             "non_rgb_bands": list(self.bands),
             "input_text": text_in,
             "target_texts": [str(output)],
-            "lat": float(sample.latitude),
-            "lon": float(sample.longitude),
+            "lat": lat,
+            "lon": lon,
         }
 
 
