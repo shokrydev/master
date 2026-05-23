@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Download the local files needed for a BigEarthNet encoder.
+"""Download the local files needed for the BigEarthNet MobileViT encoder.
 
-The official reBEN model loader can read a local Hugging Face-style directory.
-For the MobileViT encoder asset we only need the model config and weights:
-`config.json` and `model.safetensors`.
+The local wrapper loads this checkpoint through timm and safetensors. It only
+needs the Hugging Face model config and weights: `config.json` and
+`model.safetensors`.
 
 Usage:
     python scripts/download_bigearthnet_encoder.py

@@ -55,6 +55,13 @@ class FinetuningCLI(LightningCLI):
         model_args = getattr(model_cfg, "init_args", None)
         loc_mode = getattr(model_args, "loc_mode", "no_loc") if model_args is not None else "no_loc"
         run_label = self.LOC_MODE_TO_RUN_LABEL.get(str(loc_mode), str(loc_mode))
+        non_rgb_conditioning = (
+            getattr(model_args, "non_rgb_conditioning", "disabled")
+            if model_args is not None
+            else "disabled"
+        )
+        if str(non_rgb_conditioning) == "enabled":
+            run_label = f"{run_label}_non_rgb"
         model_name = getattr(model_args, "model_name_or_path", "model") if model_args is not None else "model"
         model_slug = str(model_name).split("/")[-1].lower().replace(".", "_")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

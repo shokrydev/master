@@ -464,7 +464,7 @@ class BENTxTDataModule(pl.LightningDataModule):
     The module manages:
     - Automatic dataset setup for different training stages
     - Sentinel-2 RGB rendering into PIL images for the shared collator/model path
-    - normalized non-RGB imagery tensors for future specialized vision encoders
+    - normalized non-RGB imagery tensors for the optional S1/S2 encoder path
     - DataLoader creation with appropriate batch sizes and worker processes
     - GPU pinning when CUDA is available
 

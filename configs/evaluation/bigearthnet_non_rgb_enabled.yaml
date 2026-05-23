@@ -1,0 +1,8 @@
+# Override for BigEarthNet evaluation with enabled S1/S2 conditioning.
+#
+# Compose after configs/evaluation/bigearthnet_txt.yaml.
+
+model:
+  init_args:
+    non_rgb_conditioning: enabled
+    non_rgb_encoder_dir: ${paths.bigearthnet_encoder_dir}
