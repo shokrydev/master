@@ -27,7 +27,7 @@ dependencies = [
     # Image processing
     "pillow>=10.0.0",
     # CLI and config
-    "jsonargparse[omegaconf]>=4.27.0",
+    "jsonargparse[omegaconf,signatures]>=4.27.7",
     "rich>=13.0.0",
     # Logging
     "tensorboard>=2.16.0",

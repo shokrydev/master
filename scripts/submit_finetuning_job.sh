@@ -130,7 +130,7 @@ for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
 done
 
 if [ -z "$JOB_NAME" ]; then
-    JOB_NAME="bentxt-${CONDITION}-${SIZE}-${RUN_KIND}"
+    JOB_NAME="${CONDITION}-${SIZE}-${RUN_KIND}"
 fi
 
 if [ -z "$PARTITION" ]; then
