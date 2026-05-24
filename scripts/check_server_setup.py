@@ -12,6 +12,17 @@ from omegaconf import OmegaConf
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = REPO_ROOT / ".env"
+LIGHTNING_CONFIG_KEYS = {
+    "seed_everything",
+    "trainer",
+    "model",
+    "data",
+    "paths",
+    "optimizer",
+    "lr_scheduler",
+    "ckpt_path",
+    "weights_only",
+}
 
 REQUIRED_ENV_VARS = (
     "BIGEARTHNET_V2_LMDB_ROOT",
@@ -63,6 +74,35 @@ def require_path(path: Path, label: str, *, directory: bool) -> None:
     print(f"OK {label}: {path}")
 
 
+def load_lightning_config(config_file: Path) -> object:
+    config = OmegaConf.load(config_file)
+    unknown_keys = set(config.keys()) - LIGHTNING_CONFIG_KEYS
+    if unknown_keys:
+        relative_path = config_file.relative_to(REPO_ROOT)
+        raise SystemExit(
+            f"{relative_path} contains unsupported top-level keys: "
+            f"{', '.join(sorted(unknown_keys))}"
+        )
+    unresolved = OmegaConf.to_container(config, resolve=False)
+    if "paths" in unresolved and not contains_paths_reference(
+        {key: value for key, value in unresolved.items() if key != "paths"}
+    ):
+        relative_path = config_file.relative_to(REPO_ROOT)
+        raise SystemExit(f"{relative_path} defines paths but does not use them locally.")
+    OmegaConf.to_container(config, resolve=True)
+    return config
+
+
+def contains_paths_reference(value: object) -> bool:
+    if isinstance(value, str):
+        return "${paths." in value
+    if isinstance(value, dict):
+        return any(contains_paths_reference(item) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_paths_reference(item) for item in value)
+    return False
+
+
 def check_env_paths() -> None:
     for name in REQUIRED_ENV_VARS:
         require_env(name)
@@ -89,6 +129,10 @@ def check_env_paths() -> None:
 
 
 def check_config_composition() -> None:
+    for config_file in sorted((REPO_ROOT / "configs").glob("**/*.yaml")):
+        load_lightning_config(config_file)
+    print("OK config files contain only LightningCLI-supported top-level keys.")
+
     config_files = [
         "configs/finetuning/bigearthnet_txt_shared.yaml",
         "configs/finetuning/loc_embed.yaml",
@@ -96,9 +140,7 @@ def check_config_composition() -> None:
     ]
     configs = []
     for config_file in config_files:
-        config = OmegaConf.load(REPO_ROOT / config_file)
-        OmegaConf.to_container(config, resolve=True)
-        configs.append(config)
+        configs.append(load_lightning_config(REPO_ROOT / config_file))
 
     config = OmegaConf.merge(*configs)
     resolved = OmegaConf.to_container(config, resolve=True)

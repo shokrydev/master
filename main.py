@@ -5,9 +5,9 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-import lightning as L
 import unsloth  # Must be imported before transformers for Unsloth optimizations
-from lightning.pytorch.cli import LightningCLI
+import lightning as L
+from lightning.pytorch.cli import LightningArgumentParser, LightningCLI
 
 # Import concrete classes so Lightning CLI can discover them via class_path.
 from src.data_modules import BENTxTDataModule, GAIADataModule  # noqa: F401
@@ -17,11 +17,26 @@ from src.lightning_modules import Qwen3VLModule
 class FinetuningCLI(LightningCLI):
     """Custom Lightning CLI for finetuning runs."""
 
+    PATH_ARGUMENTS = (
+        "output_dir",
+        "adapter_dir",
+        "bigearthnet_v2_lmdb_root",
+        "bigearthnet_txt_parquet_path",
+        "bigearthnet_encoder_dir",
+        "satclip_checkpoint_path",
+        "gaia_root",
+    )
+
     LOC_MODE_TO_RUN_LABEL = {
         "no_loc": "no_loc",
         "loc_text": "loc_text",
         "loc_embed": "loc_embed",
     }
+
+    def add_arguments_to_parser(self, parser: LightningArgumentParser) -> None:
+        """Register config-only path aliases used by YAML interpolation."""
+        for path_name in self.PATH_ARGUMENTS:
+            parser.add_argument(f"--paths.{path_name}", type=str, default=None)
 
     @staticmethod
     def _uses_default_outputs_root(path_value: object) -> bool:
