@@ -66,7 +66,7 @@ def check_env_paths() -> None:
     for name in REQUIRED_ENV_VARS:
         require_env(name)
 
-    require_path(Path(require_env("BIGEARTHNET_V2_LMDB_ROOT")), "BigEarthNet-v2 LMDB root", directory=True)
+    require_path(Path(require_env("BIGEARTHNET_V2_LMDB_ROOT")), "BigEarthNet-v2 LMDB environment", directory=True)
     require_path(Path(require_env("BIGEARTHNET_TXT_PARQUET_PATH")), "BigEarthNet.txt parquet", directory=False)
 
     encoder_dir = Path(require_env("BIGEARTHNET_ENCODER_DIR"))

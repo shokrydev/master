@@ -63,8 +63,8 @@ Fill in the server-local paths. Directory examples intentionally end in `/`;
 file examples do not.
 
 ```bash
-# Directory containing the BigEarthNet-v2 LMDB imagery.
-BIGEARTHNET_V2_LMDB_ROOT=/absolute/path/to/BigEarthNet-v2-lmdb/
+# Directory of the BigEarthNet-v2 LMDB environment, e.g. BENv2.lmdb/.
+BIGEARTHNET_V2_LMDB_ROOT=/absolute/path/to/BENv2.lmdb/
 # File path to the BigEarthNet.txt parquet metadata.
 BIGEARTHNET_TXT_PARQUET_PATH=/absolute/path/to/BigEarthNet.txt.parquet
 # Directory containing, or to be populated with, config.json and model.safetensors.
