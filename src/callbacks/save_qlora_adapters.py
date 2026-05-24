@@ -6,7 +6,7 @@ from safetensors.torch import save_file
 
 
 class SaveQLoRAAdaptersCallback(Callback):
-    """Save the adapter directory and optional projection modules for the best run."""
+    """Save the QLoRA adapter bundle and optional projection modules."""
 
     def __init__(
         self,
@@ -50,7 +50,7 @@ class SaveQLoRAAdaptersCallback(Callback):
             non_rgb_projection_path.unlink()
 
         self._saved_once = True
-        pl_module.print(f"Saved QLoRA adapters to {self.dirpath}")
+        pl_module.print(f"Saved QLoRA adapter bundle to {self.dirpath}")
 
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         if trainer.sanity_checking:

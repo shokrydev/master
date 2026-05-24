@@ -5,7 +5,7 @@ seed_everything: 42
 
 paths:
   output_dir: ${oc.env:FINETUNING_OUTPUT_DIR,./outputs}
-  adapter_dir: ${oc.env:FINETUNING_ADAPTER_DIR,${paths.output_dir}/adapter}
+  adapter_dir: ${oc.env:FINETUNING_ADAPTER_DIR,${paths.output_dir}/qlora_adapter}
   gaia_root: ${oc.env:GAIA_ROOT,data/gaia}
   satclip_checkpoint_path: ${oc.env:SATCLIP_CHECKPOINT_PATH,data/satclip/satclip-vit16-l10.ckpt}
 

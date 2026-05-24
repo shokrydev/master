@@ -74,7 +74,7 @@ class Qwen3VLModule(L.LightningModule):
 
         Args:
             model_name_or_path: Unsloth model ID (e.g., "unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit")
-            adapter_dir: Saved adapter directory for validate/test/predict
+            adapter_dir: Saved adapter bundle directory for validate/test/predict
             max_seq_length: Maximum sequence length for training
             lora_r: LoRA rank
             lora_alpha: LoRA alpha scaling factor
@@ -202,7 +202,7 @@ class Qwen3VLModule(L.LightningModule):
             raise ValueError("adapter_dir cannot be set for fit; training starts from a base model")
         if stage in {"validate", "test", "predict"} and not self.adapter_dir:
             raise ValueError(
-                f"{stage} requires model.init_args.adapter_dir to point at saved adapters"
+                f"{stage} requires model.init_args.adapter_dir to point at a saved adapter bundle"
             )
 
         model_source = self.adapter_dir or self.model_name_or_path

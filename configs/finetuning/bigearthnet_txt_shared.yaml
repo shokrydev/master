@@ -9,7 +9,7 @@ seed_everything: 42
 
 paths:
   output_dir: ${oc.env:FINETUNING_OUTPUT_DIR,./outputs}
-  adapter_dir: ${oc.env:FINETUNING_ADAPTER_DIR,${paths.output_dir}/adapter}
+  adapter_dir: ${oc.env:FINETUNING_ADAPTER_DIR,${paths.output_dir}/qlora_adapter}
   bigearthnet_v2_lmdb_root: ${oc.env:BIGEARTHNET_V2_LMDB_ROOT,""}
   bigearthnet_txt_parquet_path: ${oc.env:BIGEARTHNET_TXT_PARQUET_PATH,""}
   bigearthnet_encoder_dir: ${oc.env:BIGEARTHNET_ENCODER_DIR,data/bigearthnet_encoders/mobilevit_s-all-v0.2.0}
