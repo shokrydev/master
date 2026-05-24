@@ -1,112 +1,171 @@
-# Repository Structure
+# Geolocation-Conditioned Remote Sensing VLM
+
+This repository finetunes Qwen3-VL for remote sensing experiments that test
+whether explicit geolocation improves VLM performance.
+
+The main experimental configuration uses **BigEarthNet.txt**, which combines
+language supervision, geolocation metadata and multispectral/SAR imagery. Each
+sample can provide:
+
+- an RGB rendering derived from optical reflectance bands for Qwen3-VL's native
+  vision path
+- normalized Sentinel-1 SAR and Sentinel-2 multispectral tensors for a frozen
+  BigEarthNet MobileViT encoder
+- optional geolocation conditioning as part of the prompt text (`loc_text`) or
+  as projected SatCLIP tokens (`loc_embed`)
+
+## Repository Map
 
 ```text
-master/
-├── .gitignore
-├── .python-version
-├── README.md
-├── main.py
-├── pyproject.toml
-├── checkpoints/
-├── configs/
-│   ├── finetuning/
-│   ├── evaluation/
-│   └── ...
-├── logs/
-├── notebooks/
-├── src/
-│   ├── callbacks/
-│   │   └── __init__.py
-│   ├── data_modules/
-│   │   ├── __init__.py
-│   │   ├── ben_txt_datamodule.py
-│   │   ├── gaia_datamodule.py
-│   │   └── geo_aware_collator.py
-│   ├── evaluation/
-│   │   ├── __init__.py
-│   │   └── bigearthnet_templated_multilabel.py
-│   ├── lightning_modules/
-│   │   ├── __init__.py
-│   │   └── qwen3_vl_module.py
-│   ├── metrics/
-│   │   ├── __init__.py
-│   │   ├── captioning.py
-│   │   ├── multilabel_classification.py
-│   │   └── vqa.py
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── location_modality_projection.py
-│   │   └── satclip/
-│   │       ├── ...
-│   └── utils/
-│       ├── __init__.py
-│       └── continent_lookup.py
-├── scripts/
-│   ├── download_satclip.py
-│   ├── evaluate_runs.py
-│   ├── finetune_job.sbatch
-│   ├── prefetch_qwen3vl_weights.sh
-│   └── submit_finetuning_job.sh
-└── tests/
-    ├── test_gaia_datamodule.py
-    ├── test_loc_embed.py
-    └── test_save_qlora_adapters.py
+configs/finetuning/
+  bigearthnet_txt_shared.yaml   # primary BEN.txt finetuning config
+  bigearthnet_txt_smoke.yaml    # short-run validation override
+  loc_text.yaml                 # text-token location conditioning
+  loc_embed.yaml                # SatCLIP-token location conditioning
+  gaia_finetuning_shared.yaml   # secondary GAIA path
+
+scripts/
+  download_artifacts.py         # Qwen, SatCLIP and BigEarthNet encoder artifacts
+  submit_finetuning_job.sh      # BEN.txt-first Slurm submission helper
+  finetune_job.sbatch           # single-GPU BEN.txt Slurm job
+
+src/data_modules/
+  ben_txt_datamodule.py         # BigEarthNet.txt loader
+  gaia_datamodule.py            # GAIA loader
+  geo_aware_collator.py         # shared Qwen/geo/non-RGB collation
+
+src/lightning_modules/
+  qwen3_vl_module.py            # QLoRA training, loc and non-RGB conditioning
+
+src/models/
+  bigearthnet_s1s2_encoder.py
+  non_rgb_modality_projection.py
+  location_modality_projection.py
+  satclip/
 ```
 
-# Required External Assets
+## Environment
 
-This repository does not track large model or dataset artifacts. You must provide them externally.
+Reproduce the Python environment from `pyproject.toml` with `uv`:
 
-## 1) Unsloth Qwen3-VL 4-bit model repos
+```bash
+uv sync
+```
 
-Used for the 2B / 4B / 8B runs:
+Create a private repo-root `.env` from the template:
+
+```bash
+cp .env.example .env
+```
+
+Fill in the server-local paths:
+
+```bash
+BIGEARTHNET_V2_LMDB_ROOT=/path/to/BigEarthNet-v2-lmdb
+BIGEARTHNET_TXT_PARQUET_PATH=/path/to/BigEarthNet.txt.parquet
+BIGEARTHNET_ENCODER_DIR=/path/to/mobilevit_s-all-v0.2.0
+SATCLIP_CHECKPOINT_PATH=/path/to/satclip-vit16-l10.ckpt
+HF_HOME=/path/to/huggingface-cache
+FINETUNING_OUTPUT_ROOT=/path/to/finetuning_outputs
+```
+
+The real `.env` is machine-specific and intentionally ignored by version
+control; `.env.example` documents the required variables.
+
+## BigEarthNet.txt Data
+
+This repository does not prepare BigEarthNet.txt itself. Use the
+[official Hugging Face dataset instructions](https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt)
+to prepare the data, then set the corresponding LMDB and parquet paths in
+`.env`.
+
+Expected local inputs:
+
+- BigEarthNet-v2 imagery converted to the LMDB layout used by the datamodule
+- BigEarthNet.txt parquet metadata
+
+## Model Artifacts
+
+The artifact helper reads `.env` and downloads the model files needed for the
+default initial run:
+
+```bash
+uv run python scripts/download_artifacts.py --dry-run
+uv run python scripts/download_artifacts.py
+```
+
+Default downloads:
 
 - `unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit`
-- `unsloth/Qwen3-VL-4B-Instruct-unsloth-bnb-4bit`
-- `unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit`
+- `microsoft/SatCLIP-ViT16-L10`
+- `BIFOLD-BigEarthNetv2-0/mobilevit_s-all-v0.2.0`
 
-Prefetch into your HF cache (recommended before cluster jobs):
-
-```bash
-bash scripts/prefetch_qwen3vl_weights.sh 2B 4B 8B
-```
-
-## 2) BigEarthNet.txt + BigEarthNet-v2 assets
-
-Reference:
-- BigEarthNet.txt dataset card: `https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt`
-
-Expected preparation flow:
-- download BigEarthNet-v2 imagery
-- convert imagery to LMDB
-- obtain the `BigEarthNet.txt` parquet metadata from the dataset card
-- set both env vars:
+To prefetch all Qwen model sizes:
 
 ```bash
-export BIGEARTHNET_V2_LMDB_ROOT=/data/datasets/BigEarthNet-V2
-export BIGEARTHNET_TXT_PARQUET_PATH=/data/<your_own_directory>/BigEarthNet.txt.parquet
+uv run python scripts/download_artifacts.py --all
 ```
 
-## 3) SatCLIP checkpoint (loc_embed only)
+The BigEarthNet MobileViT wrapper loads `config.json` and
+`model.safetensors` directly through `timm` and `safetensors`.
 
-`loc_embed` requires a [SatCLIP](https://github.com/microsoft/satclip) checkpoint (recommended variant: `SatCLIP-ViT16-L10`).
+## Initial Slurm Check
+
+The default Slurm submission runs a short end-to-end check of the full
+architecture:
+
+- Qwen3-VL 2B
+- BigEarthNet.txt
+- enabled non-RGB S1/S2 conditioning
+- `loc_embed`
+- short-run trainer settings
 
 ```bash
-python scripts/download_satclip.py --model SatCLIP-ViT16-L10 --output_dir /path/to/satclip
-export SATCLIP_CHECKPOINT_PATH=/path/to/satclip/satclip-vit16-l10.ckpt
+./scripts/submit_finetuning_job.sh --dry-run
+./scripts/submit_finetuning_job.sh
 ```
 
-## 4) GAIA dataset root
-
-Set up [GAIA](https://github.com/Orion-AI-Lab/GAIA) following the repository instructions, then point the code to the local GAIA root:
+Other condition checks:
 
 ```bash
-export GAIA_ROOT=/path/to/GAIA
+./scripts/submit_finetuning_job.sh --condition no_loc --dry-run
+./scripts/submit_finetuning_job.sh --condition loc_text --dry-run
 ```
 
-Expected under that root:
+Full run instead of the short check:
 
-- `train/`
-- `val/`
-- `train_data.json`
-- `val_data.json`
+```bash
+./scripts/submit_finetuning_job.sh --full
+```
+
+Each Slurm job derives its own output paths:
+
+```text
+$FINETUNING_OUTPUT_ROOT/bigearthnet_$SLURM_JOB_ID
+$FINETUNING_OUTPUT_ROOT/bigearthnet_$SLURM_JOB_ID/adapter
+```
+
+## Direct Local Command
+
+For an interactive GPU shell without Slurm:
+
+```bash
+set -a
+source .env
+set +a
+
+uv run python main.py fit \
+  --config configs/finetuning/bigearthnet_txt_shared.yaml \
+  --config configs/finetuning/loc_embed.yaml \
+  --config configs/finetuning/bigearthnet_txt_smoke.yaml \
+  --trainer.devices 1
+```
+
+Set `FINETUNING_OUTPUT_DIR` and `FINETUNING_ADAPTER_DIR` manually for direct
+runs if you do not use the Slurm helper.
+
+## Tests
+
+```bash
+uv run python -m unittest discover tests
+```
