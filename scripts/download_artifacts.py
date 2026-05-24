@@ -57,7 +57,8 @@ def load_env(path: Path) -> None:
         if not key:
             raise SystemExit(f"Invalid .env line: {raw_line}")
         parsed_value = shlex.split(value, comments=False, posix=True)
-        os.environ[key] = parsed_value[0] if parsed_value else ""
+        raw_value = parsed_value[0] if parsed_value else ""
+        os.environ[key] = os.path.expanduser(os.path.expandvars(raw_value))
 
 
 def require_env(name: str) -> str:
