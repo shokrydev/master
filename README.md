@@ -59,15 +59,22 @@ Create a private repo-root `.env` from the template:
 cp .env.example .env
 ```
 
-Fill in the server-local paths:
+Fill in the server-local paths. Directory examples intentionally end in `/`;
+file examples do not.
 
 ```bash
-BIGEARTHNET_V2_LMDB_ROOT=/path/to/BigEarthNet-v2-lmdb
-BIGEARTHNET_TXT_PARQUET_PATH=/path/to/BigEarthNet.txt.parquet
-BIGEARTHNET_ENCODER_DIR=/path/to/mobilevit_s-all-v0.2.0
-SATCLIP_CHECKPOINT_PATH=/path/to/satclip-vit16-l10.ckpt
-HF_HOME=/path/to/huggingface-cache
-FINETUNING_OUTPUT_ROOT=/path/to/finetuning_outputs
+# Directory containing the BigEarthNet-v2 LMDB imagery.
+BIGEARTHNET_V2_LMDB_ROOT=/absolute/path/to/BigEarthNet-v2-lmdb/
+# File path to the BigEarthNet.txt parquet metadata.
+BIGEARTHNET_TXT_PARQUET_PATH=/absolute/path/to/BigEarthNet.txt.parquet
+# Directory containing, or to be populated with, config.json and model.safetensors.
+BIGEARTHNET_ENCODER_DIR=/absolute/path/to/mobilevit_s-all-v0.2.0/
+# File path to the SatCLIP checkpoint.
+SATCLIP_CHECKPOINT_PATH=/absolute/path/to/satclip-vit16-l10.ckpt
+# Hugging Face cache root directory.
+HF_HOME=${HOME}/.cache/huggingface/
+# Directory under which Slurm run directories are created.
+FINETUNING_OUTPUT_ROOT=/absolute/path/to/finetuning_outputs/
 ```
 
 The real `.env` is machine-specific and intentionally ignored by version
@@ -157,8 +164,8 @@ BigEarthNet.txt 2B `loc_embed` run:
 Each Slurm job derives its own output paths:
 
 ```text
-$FINETUNING_OUTPUT_ROOT/bigearthnet_$SLURM_JOB_ID
-$FINETUNING_OUTPUT_ROOT/bigearthnet_$SLURM_JOB_ID/adapter
+${FINETUNING_OUTPUT_ROOT}bigearthnet_$SLURM_JOB_ID
+${FINETUNING_OUTPUT_ROOT}bigearthnet_$SLURM_JOB_ID/qlora_adapter
 ```
 
 ## Direct Local Command
@@ -178,7 +185,8 @@ uv run python main.py fit \
 ```
 
 Set `FINETUNING_OUTPUT_DIR` and `FINETUNING_ADAPTER_DIR` manually for direct
-runs if you do not use the Slurm helper.
+runs if you do not use the Slurm helper. One run writes one QLoRA adapter
+bundle to `FINETUNING_ADAPTER_DIR`.
 
 ## Tests
 
