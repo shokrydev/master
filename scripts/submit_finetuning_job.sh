@@ -11,6 +11,15 @@
 
 set -e
 
+if [ ! -f .env ]; then
+    echo "Missing .env. Copy .env.example to .env and fill in the server-local paths."
+    exit 1
+fi
+set -a
+# shellcheck disable=SC1091
+source .env
+set +a
+
 SIZE="2B"
 CONDITION="loc_embed"
 SMOKE=true
@@ -90,6 +99,24 @@ if [ "$SMOKE" = true ]; then
     RUN_KIND="smoke"
 fi
 
+REQUIRED_ENV_VARS=(
+    BIGEARTHNET_V2_LMDB_ROOT
+    BIGEARTHNET_TXT_PARQUET_PATH
+    BIGEARTHNET_ENCODER_DIR
+    FINETUNING_OUTPUT_ROOT
+    HF_HOME
+)
+if [ "$CONDITION" = "loc_embed" ]; then
+    REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
+fi
+
+MISSING_ENV_VARS=()
+for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
+    if [ -z "${!VAR_NAME:-}" ]; then
+        MISSING_ENV_VARS+=("$VAR_NAME")
+    fi
+done
+
 if [ -z "$JOB_NAME" ]; then
     JOB_NAME="bentxt-${CONDITION}-${SIZE}-${RUN_KIND}"
 fi
@@ -107,6 +134,11 @@ echo "Run kind: $RUN_KIND"
 echo "Size: $SIZE"
 echo "Model: $MODEL_NAME"
 echo "Job name: $JOB_NAME"
+echo "Required paths:"
+for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
+    VALUE="${!VAR_NAME:-<missing>}"
+    echo "  $VAR_NAME=$VALUE"
+done
 echo "Extra args: ${EXTRA_ARGS[*]}"
 echo "=============================================="
 
@@ -124,8 +156,18 @@ printf ' %q' "${FULL_CMD[@]}"
 printf '\n\n'
 
 if [ "$DRY_RUN" = true ]; then
+    if [ "${#MISSING_ENV_VARS[@]}" -gt 0 ]; then
+        echo "Missing required env vars for real submission: ${MISSING_ENV_VARS[*]}"
+        echo "[Dry run - not submitting]"
+        exit 0
+    fi
     echo "[Dry run - not submitting]"
 else
+    if [ "${#MISSING_ENV_VARS[@]}" -gt 0 ]; then
+        echo "Missing required env vars: ${MISSING_ENV_VARS[*]}"
+        echo "Set them before submitting so Slurm can inherit them via --export=ALL."
+        exit 1
+    fi
     echo "Submitting job..."
     "${FULL_CMD[@]}"
 fi

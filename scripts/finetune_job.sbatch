@@ -23,17 +23,49 @@ set -e
 # Or conda:
 # source ~/.bashrc && conda activate vlm
 
-export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 export UNSLOTH_DISABLE_STATISTICS=1  # skip silent telemetry downloads that stall for minutes
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 CONDITION_CONFIG="${CONDITION_CONFIG:-}"
 SMOKE_CONFIG="${SMOKE_CONFIG:-}"
-OUTPUT_DIR="${FINETUNING_OUTPUT_DIR:-outputs/bigearthnet_${SLURM_JOB_ID}}"
-
-mkdir -p "$OUTPUT_DIR"
 
 cd "$SLURM_SUBMIT_DIR"
+
+if [ ! -f .env ]; then
+    echo "Missing .env. Copy .env.example to .env and fill in the server-local paths."
+    exit 1
+fi
+set -a
+# shellcheck disable=SC1091
+source .env
+set +a
+
+OUTPUT_DIR="${FINETUNING_OUTPUT_ROOT}/bigearthnet_${SLURM_JOB_ID}"
+export FINETUNING_OUTPUT_DIR="$OUTPUT_DIR"
+export FINETUNING_ADAPTER_DIR="${OUTPUT_DIR}/adapter"
+REQUIRED_ENV_VARS=(
+    BIGEARTHNET_V2_LMDB_ROOT
+    BIGEARTHNET_TXT_PARQUET_PATH
+    BIGEARTHNET_ENCODER_DIR
+    FINETUNING_OUTPUT_ROOT
+    HF_HOME
+)
+if [ "$CONDITION_CONFIG" = "configs/finetuning/loc_embed.yaml" ]; then
+    REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
+fi
+
+MISSING_ENV_VARS=()
+for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
+    if [ -z "${!VAR_NAME:-}" ]; then
+        MISSING_ENV_VARS+=("$VAR_NAME")
+    fi
+done
+if [ "${#MISSING_ENV_VARS[@]}" -gt 0 ]; then
+    echo "Missing required env vars: ${MISSING_ENV_VARS[*]}"
+    exit 1
+fi
+
+mkdir -p "$OUTPUT_DIR"
 
 CONFIG_ARGS=(--config configs/finetuning/bigearthnet_txt_shared.yaml)
 if [ -n "$CONDITION_CONFIG" ]; then
@@ -47,6 +79,11 @@ printf 'Config args:'
 printf ' %q' "${CONFIG_ARGS[@]}"
 printf '\n'
 echo "Output dir: $OUTPUT_DIR"
+echo "Adapter dir: $FINETUNING_ADAPTER_DIR"
+echo "Required paths:"
+for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
+    echo "  $VAR_NAME=${!VAR_NAME}"
+done
 
 python main.py fit \
     "${CONFIG_ARGS[@]}" \
