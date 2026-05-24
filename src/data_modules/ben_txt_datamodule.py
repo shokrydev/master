@@ -35,6 +35,7 @@ _rgb_band_order = ["B04", "B03", "B02"]
 RGBRenderMode = Literal["copernicus", "quantile"]
 _copernicus_rgb_scale = 3558.0
 _default_rgb_quantile = 0.90
+_InfoFn = Callable[[str], None]
 
 """
 Band statistics for BigEarthNet v2 (including S1 stats from v1) after
@@ -96,6 +97,18 @@ def _resolve_bands(bands: Iterable[str] | str | None, *, default: str = "all") -
     if not resolved:
         raise ValueError("At least one BigEarthNet band must be selected")
     return resolved
+
+
+def _noop_info(_: str) -> None:
+    return None
+
+
+def _resolve_info_fn(info_fn: _InfoFn | None) -> _InfoFn:
+    if info_fn is None:
+        return _noop_info
+    if not callable(info_fn):
+        raise TypeError("info_fn must be callable or None")
+    return info_fn
 
 
 def _union_bands(*band_groups: Iterable[str]) -> list[str]:
@@ -208,7 +221,7 @@ class BENImageReader:
             bands: Iterable[str],
             img_size: int = 120,
             upsample_mode: str = "nearest",
-            info_fn: Callable | None = lambda x: x,
+            info_fn: _InfoFn | None = None,
     ):
         self.img_size = img_size
         self.upsample_mode = upsample_mode
@@ -216,13 +229,14 @@ class BENImageReader:
         self.bands = list(bands)
         self.env = None
 
-        info_fn(f"Using bandorder {self.bands}")
+        log_info = _resolve_info_fn(info_fn)
+        log_info(f"Using bandorder {self.bands}")
         self.uses_s1 = any(x in _s1_bandnames for x in self.bands)
         self.uses_s2 = any(x in _s2_bandnames for x in self.bands)
 
         metadata = pd.read_parquet(metadata_file)
         self.mapping = dict(zip(metadata["patch_id"], metadata["s1_name"], strict=True))
-        info_fn("S1-S2 mapping created")
+        log_info("S1-S2 mapping created")
 
     def stack_and_interpolate(
             self,
@@ -312,7 +326,7 @@ class BENTxTDataset(Dataset):
             splits: Iterable[str] | None = None,
             point_token: str | None = None,
             ref_token: str | None = None,
-            info_fn: Callable = lambda x: x,
+            info_fn: _InfoFn | None = None,
     ):
         """
         Initialize the BigEarthNet.txt Dataset.
@@ -344,6 +358,7 @@ class BENTxTDataset(Dataset):
             info_fn: Optional callback function for logging information during initialization.
         """
         super().__init__()
+        log_info = _resolve_info_fn(info_fn)
 
         self.bands = _resolve_bands(bands)
         if rgb_render_mode not in ("copernicus", "quantile"):
@@ -364,14 +379,14 @@ class BENTxTDataset(Dataset):
             self.reader_bands,
             img_size,
             upsample_mode,
-            info_fn=info_fn,
+            info_fn=log_info,
         )
 
         self.text_data = pd.read_parquet(metadata_file)
 
         # check the format of the text file
         assert self._expected_columns.issubset(set(self.text_data.columns)), f"The text data at {metadata_file} does not contain the expected columns"
-        info_fn(f"Loaded text data with {len(self.text_data)} entries")
+        log_info(f"Loaded text data with {len(self.text_data)} entries")
         if types is not None:
             self.text_data = self.text_data[self.text_data["type"].isin(types)]
         if categories is not None:
@@ -383,11 +398,11 @@ class BENTxTDataset(Dataset):
         if climate_zones is not None:
             self.text_data = self.text_data[self.text_data["climate_zone"].isin(climate_zones)]
         self.text_data = self.text_data.reset_index(drop=True)
-        info_fn(f"After filtering, text data contains {len(self.text_data)} entries")
+        log_info(f"After filtering, text data contains {len(self.text_data)} entries")
 
         if splits is not None:
             self.text_data = self.text_data[self.text_data["split"].isin(splits)].reset_index(drop=True)
-            info_fn(f"Split {splits} text data contains {len(self.text_data)} entries")
+            log_info(f"Split {splits} text data contains {len(self.text_data)} entries")
 
         self.transform = transform
         self.point_token = ["", ""] if point_token is None else point_token
@@ -502,7 +517,6 @@ class BENTxTDataModule(pl.LightningDataModule):
             image_transforms_eval: Callable | None = None,
             point_token: Iterable[str] = None,
             ref_token: Iterable[str] = None,
-            info_fn: Callable | None = lambda x: x,
     ):
         """
         Initialize the BigEarthNet.txt DataModule.
@@ -534,7 +548,6 @@ class BENTxTDataModule(pl.LightningDataModule):
             image_transforms_eval: Optional transform applied to normalized non-RGB imagery tensors for evaluation.
             point_token: Optional tuple of [start_token, end_token] to wrap <point> tags in text.
             ref_token: Optional tuple of [start_token, end_token] to wrap <ref> tags in text.
-            info_fn: Optional callback function for logging during initialization.
         """
         super().__init__()
         self.num_workers_dataloader = num_workers_dataloader
@@ -567,7 +580,6 @@ class BENTxTDataModule(pl.LightningDataModule):
             "climate_zones": climate_zones,
             "point_token": point_token,
             "ref_token": ref_token,
-            "info_fn": info_fn,
         }
 
         self.mean = [means[band] for band in self.bands]
