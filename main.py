@@ -10,7 +10,7 @@ import unsloth  # Must be imported before transformers for Unsloth optimizations
 from lightning.pytorch.cli import LightningCLI
 
 # Import concrete classes so Lightning CLI can discover them via class_path.
-from src.data_modules import GAIADataModule
+from src.data_modules import BENTxTDataModule, GAIADataModule  # noqa: F401
 from src.lightning_modules import Qwen3VLModule
 
 
@@ -18,7 +18,7 @@ class FinetuningCLI(LightningCLI):
     """Custom Lightning CLI for finetuning runs."""
 
     LOC_MODE_TO_RUN_LABEL = {
-        "no_loc": "baseline",
+        "no_loc": "no_loc",
         "loc_text": "loc_text",
         "loc_embed": "loc_embed",
     }

@@ -26,7 +26,8 @@ configs/finetuning/
 
 scripts/
   download_artifacts.py         # Qwen, SatCLIP and BigEarthNet encoder artifacts
-  submit_finetuning_job.sh      # BEN.txt-first Slurm submission helper
+  submit_smoke_job.sh           # short Slurm validation helper
+  submit_finetuning_job.sh      # full BEN.txt Slurm submission helper
   finetune_job.sbatch           # single-GPU BEN.txt Slurm job
 
 src/data_modules/
@@ -109,10 +110,19 @@ uv run python scripts/download_artifacts.py --all
 The BigEarthNet MobileViT wrapper loads `config.json` and
 `model.safetensors` directly through `timm` and `safetensors`.
 
-## Initial Slurm Check
+## Setup Check
 
-The default Slurm submission runs a short end-to-end check of the full
-architecture:
+Before submitting a Slurm job, validate the local paths, required artifacts and
+BigEarthNet `loc_embed` smoke config:
+
+```bash
+uv run python scripts/check_server_setup.py
+```
+
+## Slurm Submission
+
+Use `submit_smoke_job.sh` for a short Slurm validation run before launching a
+full finetuning job. Its default checks the full architecture with:
 
 - Qwen3-VL 2B
 - BigEarthNet.txt
@@ -121,21 +131,27 @@ architecture:
 - short-run trainer settings
 
 ```bash
-./scripts/submit_finetuning_job.sh --dry-run
-./scripts/submit_finetuning_job.sh
+# Print the sbatch command and resolved paths without submitting.
+./scripts/submit_smoke_job.sh --dry-run
+
+# Submit the short validation run.
+./scripts/submit_smoke_job.sh
 ```
 
 Other condition checks:
 
 ```bash
-./scripts/submit_finetuning_job.sh --condition no_loc --dry-run
-./scripts/submit_finetuning_job.sh --condition loc_text --dry-run
+# Print alternative condition submissions without launching jobs.
+./scripts/submit_smoke_job.sh --condition no_loc --dry-run
+./scripts/submit_smoke_job.sh --condition loc_text --dry-run
 ```
 
-Full run instead of the short check:
+Use `submit_finetuning_job.sh` for full runs. Its default is the full
+BigEarthNet.txt 2B `loc_embed` run:
 
 ```bash
-./scripts/submit_finetuning_job.sh --full
+./scripts/submit_finetuning_job.sh --dry-run
+./scripts/submit_finetuning_job.sh
 ```
 
 Each Slurm job derives its own output paths:

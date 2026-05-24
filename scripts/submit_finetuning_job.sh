@@ -1,11 +1,10 @@
 #!/bin/bash
 # ============================================================================
-# Finetuning Job Submission Helper
+# Full Finetuning Job Submission Helper
 # ============================================================================
 # Usage:
 #   ./scripts/submit_finetuning_job.sh
 #   ./scripts/submit_finetuning_job.sh --condition loc_text --size 4B
-#   ./scripts/submit_finetuning_job.sh --condition no_loc --full
 #   ./scripts/submit_finetuning_job.sh --dry-run
 # ============================================================================
 
@@ -22,7 +21,6 @@ set +a
 
 SIZE="2B"
 CONDITION="loc_embed"
-SMOKE=true
 JOB_NAME=""
 DRY_RUN=false
 EXTRA_ARGS=()
@@ -36,14 +34,6 @@ while [[ $# -gt 0 ]]; do
         --condition)
             CONDITION="$2"
             shift 2
-            ;;
-        --smoke)
-            SMOKE=true
-            shift
-            ;;
-        --full)
-            SMOKE=false
-            shift
             ;;
         --name)
             JOB_NAME="$2"
@@ -92,10 +82,9 @@ case "$CONDITION" in
         ;;
 esac
 
-SMOKE_CONFIG=""
+SMOKE_CONFIG="${SMOKE_CONFIG:-}"
 RUN_KIND="full"
-if [ "$SMOKE" = true ]; then
-    SMOKE_CONFIG="configs/finetuning/bigearthnet_txt_smoke.yaml"
+if [ -n "$SMOKE_CONFIG" ]; then
     RUN_KIND="smoke"
 fi
 

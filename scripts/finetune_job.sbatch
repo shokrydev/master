@@ -85,7 +85,7 @@ for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
     echo "  $VAR_NAME=${!VAR_NAME}"
 done
 
-python main.py fit \
+uv run python main.py fit \
     "${CONFIG_ARGS[@]}" \
     --trainer.default_root_dir "$OUTPUT_DIR" \
     --trainer.devices 1 \
