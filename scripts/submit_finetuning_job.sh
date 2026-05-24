@@ -5,6 +5,7 @@
 # Usage:
 #   ./scripts/submit_finetuning_job.sh
 #   ./scripts/submit_finetuning_job.sh --condition loc_text --size 4B
+#   ./scripts/submit_finetuning_job.sh --size 8B --partition big_job --time 7-00:00:00
 #   ./scripts/submit_finetuning_job.sh --dry-run
 # ============================================================================
 
@@ -22,21 +23,43 @@ set +a
 SIZE="2B"
 CONDITION="loc_embed"
 JOB_NAME=""
+PARTITION="${SLURM_DEFAULT_PARTITION:-}"
+TIME_LIMIT=""
 DRY_RUN=false
 EXTRA_ARGS=()
+
+require_arg() {
+    if [ -z "${2:-}" ]; then
+        echo "Missing value for $1"
+        exit 1
+    fi
+}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --size)
+            require_arg "$1" "${2:-}"
             SIZE="$2"
             shift 2
             ;;
         --condition)
+            require_arg "$1" "${2:-}"
             CONDITION="$2"
             shift 2
             ;;
         --name)
+            require_arg "$1" "${2:-}"
             JOB_NAME="$2"
+            shift 2
+            ;;
+        --partition)
+            require_arg "$1" "${2:-}"
+            PARTITION="$2"
+            shift 2
+            ;;
+        --time)
+            require_arg "$1" "${2:-}"
+            TIME_LIMIT="$2"
             shift 2
             ;;
         --dry-run)
@@ -110,6 +133,10 @@ if [ -z "$JOB_NAME" ]; then
     JOB_NAME="bentxt-${CONDITION}-${SIZE}-${RUN_KIND}"
 fi
 
+if [ -z "$PARTITION" ]; then
+    echo "Missing Slurm partition. Set SLURM_DEFAULT_PARTITION in .env or pass --partition."
+    exit 1
+fi
 mkdir -p logs
 
 echo "=============================================="
@@ -123,6 +150,8 @@ echo "Run kind: $RUN_KIND"
 echo "Size: $SIZE"
 echo "Model: $MODEL_NAME"
 echo "Job name: $JOB_NAME"
+echo "Slurm partition: $PARTITION"
+echo "Slurm time limit: ${TIME_LIMIT:-<partition default>}"
 echo "Required paths:"
 for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
     VALUE="${!VAR_NAME:-<missing>}"
@@ -135,7 +164,11 @@ SCRIPT="scripts/finetune_job.sbatch"
 FULL_CMD=(
     sbatch
     "--job-name=$JOB_NAME"
+    "--partition=$PARTITION"
 )
+if [ -n "$TIME_LIMIT" ]; then
+    FULL_CMD+=("--time=$TIME_LIMIT")
+fi
 FULL_CMD+=("--export=ALL,CONDITION_CONFIG=$CONDITION_CONFIG,SMOKE_CONFIG=$SMOKE_CONFIG" "$SCRIPT")
 FULL_CMD+=("--model.init_args.model_name_or_path" "$MODEL_NAME")
 FULL_CMD+=("${EXTRA_ARGS[@]}")

@@ -2,13 +2,11 @@
 #SBATCH --job-name=vlm-finetune
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
-#SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --partition=gpu
 # Single-GPU BigEarthNet.txt finetuning job.
 
 set -e

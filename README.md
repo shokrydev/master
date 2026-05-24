@@ -75,6 +75,8 @@ SATCLIP_CHECKPOINT_PATH=/absolute/path/to/satclip-vit16-l10.ckpt
 HF_HOME=${HOME}/.cache/huggingface/
 # Directory under which Slurm run directories are created.
 FINETUNING_OUTPUT_ROOT=/absolute/path/to/finetuning_outputs/
+# Stable Slurm partition default for this machine. Override per run when needed.
+SLURM_DEFAULT_PARTITION=small_job
 ```
 
 The real `.env` is machine-specific and intentionally ignored by version
@@ -145,6 +147,13 @@ full finetuning job. Its default checks the full architecture with:
 ./scripts/submit_smoke_job.sh
 ```
 
+The Slurm partition comes from `.env` by default. Use command line overrides
+for individual submissions instead of editing `.env` between runs:
+
+```bash
+./scripts/submit_smoke_job.sh --partition small_job --dry-run
+```
+
 Other condition checks:
 
 ```bash
@@ -159,6 +168,13 @@ BigEarthNet.txt 2B `loc_embed` run:
 ```bash
 ./scripts/submit_finetuning_job.sh --dry-run
 ./scripts/submit_finetuning_job.sh
+```
+
+For a longer or larger run, make the scheduling choice explicit in the
+submission command:
+
+```bash
+./scripts/submit_finetuning_job.sh --size 8B --partition big_job --time 7-00:00:00 --dry-run
 ```
 
 Each Slurm job derives its own output paths:

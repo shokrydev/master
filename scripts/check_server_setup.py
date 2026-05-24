@@ -20,6 +20,7 @@ REQUIRED_ENV_VARS = (
     "SATCLIP_CHECKPOINT_PATH",
     "HF_HOME",
     "FINETUNING_OUTPUT_ROOT",
+    "SLURM_DEFAULT_PARTITION",
 )
 
 
@@ -83,6 +84,8 @@ def check_env_paths() -> None:
     output_root = Path(require_env("FINETUNING_OUTPUT_ROOT"))
     output_root.mkdir(parents=True, exist_ok=True)
     require_path(output_root, "finetuning output root", directory=True)
+
+    print(f"OK Slurm default partition: {require_env('SLURM_DEFAULT_PARTITION')}")
 
 
 def check_config_composition() -> None:
