@@ -1,7 +1,8 @@
-# Path contract for BigEarthNet.txt secondary evaluation.
+# BigEarthNet.txt evaluation config.
 #
-# This keeps the external BigEarthNet paths separate from GAIA while reusing
-# the same shared sample schema and collator/model path.
+# BigEarthNet is the primary path for multispectral/SAR experiments. Evaluation
+# therefore defaults to enabled S1/S2 conditioning; RGB-only evaluation should
+# be an explicit ablation override.
 
 paths:
   output_dir: ${oc.env:EVAL_OUTPUT_DIR,./outputs/eval}
@@ -17,8 +18,8 @@ trainer:
 model:
   init_args:
     adapter_dir: ${paths.adapter_dir}
-    non_rgb_conditioning: disabled
-    non_rgb_encoder_dir: null
+    non_rgb_conditioning: enabled
+    non_rgb_encoder_dir: ${paths.bigearthnet_encoder_dir}
     non_rgb_encoder_feature_dim: null
     non_rgb_feature_mode: spatial_4x4
     non_rgb_spatial_pool_size: 4
