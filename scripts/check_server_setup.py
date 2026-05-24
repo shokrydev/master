@@ -94,9 +94,13 @@ def check_config_composition() -> None:
         "configs/finetuning/loc_embed.yaml",
         "configs/finetuning/bigearthnet_txt_smoke.yaml",
     ]
-    config = OmegaConf.merge(
-        *[OmegaConf.load(REPO_ROOT / config_file) for config_file in config_files]
-    )
+    configs = []
+    for config_file in config_files:
+        config = OmegaConf.load(REPO_ROOT / config_file)
+        OmegaConf.to_container(config, resolve=True)
+        configs.append(config)
+
+    config = OmegaConf.merge(*configs)
     resolved = OmegaConf.to_container(config, resolve=True)
 
     model_args = resolved["model"]["init_args"]

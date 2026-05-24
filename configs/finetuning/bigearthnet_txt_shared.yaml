@@ -13,7 +13,6 @@ paths:
   bigearthnet_v2_lmdb_root: ${oc.env:BIGEARTHNET_V2_LMDB_ROOT,""}
   bigearthnet_txt_parquet_path: ${oc.env:BIGEARTHNET_TXT_PARQUET_PATH,""}
   bigearthnet_encoder_dir: ${oc.env:BIGEARTHNET_ENCODER_DIR,data/bigearthnet_encoders/mobilevit_s-all-v0.2.0}
-  satclip_checkpoint_path: ${oc.env:SATCLIP_CHECKPOINT_PATH,data/satclip/satclip-vit16-l10.ckpt}
 
 trainer:
   accelerator: auto

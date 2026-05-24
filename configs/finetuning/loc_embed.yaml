@@ -3,6 +3,6 @@
 model:
   init_args:
     loc_mode: loc_embed
-    satclip_checkpoint: ${paths.satclip_checkpoint_path}
+    satclip_checkpoint: ${oc.env:SATCLIP_CHECKPOINT_PATH,data/satclip/satclip-vit16-l10.ckpt}
     satclip_dim: 256
     num_location_tokens: 1
