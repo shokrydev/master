@@ -111,6 +111,48 @@ def _resolve_info_fn(info_fn: _InfoFn | None) -> _InfoFn:
     return info_fn
 
 
+def _require_columns(
+    data: pd.DataFrame,
+    required_columns: set[str],
+    *,
+    path: str | Path,
+    label: str,
+) -> None:
+    missing_columns = sorted(required_columns - set(data.columns))
+    if missing_columns:
+        raise ValueError(f"{label} at {path} is missing columns: {missing_columns}")
+
+
+def _load_location_redacted_captions(path: str | Path | None) -> dict[str, str]:
+    if path is None or str(path).strip() == "":
+        raise ValueError(
+            "location_redacted_caption_file is required when "
+            "use_location_redacted_captions=True"
+        )
+
+    caption_data = pd.read_parquet(path)
+    _require_columns(
+        caption_data,
+        {"patch_id", "refined_caption"},
+        path=path,
+        label="Location-redacted caption file",
+    )
+    duplicate_count = int(caption_data["patch_id"].duplicated().sum())
+    if duplicate_count:
+        raise ValueError(
+            f"Location-redacted caption file {path} contains "
+            f"{duplicate_count} duplicate patch_id rows"
+        )
+
+    return dict(
+        zip(
+            caption_data["patch_id"].astype(str),
+            caption_data["refined_caption"].astype(str),
+            strict=True,
+        )
+    )
+
+
 def _union_bands(*band_groups: Iterable[str]) -> list[str]:
     bands = []
     for band_group in band_groups:
@@ -234,9 +276,19 @@ class BENImageReader:
         self.uses_s1 = any(x in _s1_bandnames for x in self.bands)
         self.uses_s2 = any(x in _s2_bandnames for x in self.bands)
 
-        metadata = pd.read_parquet(metadata_file)
-        self.mapping = dict(zip(metadata["patch_id"], metadata["s1_name"], strict=True))
-        log_info("S1-S2 mapping created")
+        self.mapping = None
+        if self.uses_s1:
+            metadata = pd.read_parquet(metadata_file)
+            _require_columns(
+                metadata,
+                {"patch_id", "s1_name"},
+                path=metadata_file,
+                label="BigEarthNet.txt metadata",
+            )
+            self.mapping = dict(
+                zip(metadata["patch_id"], metadata["s1_name"], strict=True)
+            )
+            log_info("S1-S2 mapping created")
 
     def stack_and_interpolate(
             self,
@@ -326,6 +378,8 @@ class BENTxTDataset(Dataset):
             splits: Iterable[str] | None = None,
             point_token: str | None = None,
             ref_token: str | None = None,
+            use_location_redacted_captions: bool = False,
+            location_redacted_caption_file: str | Path | None = None,
             info_fn: _InfoFn | None = None,
     ):
         """
@@ -355,10 +409,18 @@ class BENTxTDataset(Dataset):
             splits: Optional filter for dataset splits ('train', 'validation', 'test', 'bench').
             point_token: Optional tuple of [start_token, end_token] to wrap <point> tags in text.
             ref_token: Optional tuple of [start_token, end_token] to wrap <ref> tags in text.
+            use_location_redacted_captions: Replace captioning targets with
+                the location-redacted caption file while leaving all other task
+                targets unchanged.
+            location_redacted_caption_file: Optional parquet with `patch_id`
+                and `refined_caption` columns. Required when
+                use_location_redacted_captions is true.
             info_fn: Optional callback function for logging information during initialization.
         """
         super().__init__()
         log_info = _resolve_info_fn(info_fn)
+        self.use_location_redacted_captions = use_location_redacted_captions
+        self.location_redacted_captions: dict[str, str] | None = None
 
         self.bands = _resolve_bands(bands)
         if rgb_render_mode not in ("copernicus", "quantile"):
@@ -384,8 +446,12 @@ class BENTxTDataset(Dataset):
 
         self.text_data = pd.read_parquet(metadata_file)
 
-        # check the format of the text file
-        assert self._expected_columns.issubset(set(self.text_data.columns)), f"The text data at {metadata_file} does not contain the expected columns"
+        _require_columns(
+            self.text_data,
+            self._expected_columns,
+            path=metadata_file,
+            label="BigEarthNet.txt metadata",
+        )
         log_info(f"Loaded text data with {len(self.text_data)} entries")
         if types is not None:
             self.text_data = self.text_data[self.text_data["type"].isin(types)]
@@ -403,6 +469,25 @@ class BENTxTDataset(Dataset):
         if splits is not None:
             self.text_data = self.text_data[self.text_data["split"].isin(splits)].reset_index(drop=True)
             log_info(f"Split {splits} text data contains {len(self.text_data)} entries")
+
+        if self.use_location_redacted_captions:
+            self.location_redacted_captions = _load_location_redacted_captions(
+                location_redacted_caption_file
+            )
+            caption_patch_ids = set(
+                self.text_data.loc[
+                    self.text_data["type"].eq("captioning"),
+                    "patch_id",
+                ].astype(str)
+            )
+            missing_caption_ids = caption_patch_ids - set(self.location_redacted_captions)
+            if missing_caption_ids:
+                examples = sorted(missing_caption_ids)[:5]
+                raise ValueError(
+                    "Location-redacted caption file does not cover all "
+                    f"captioning rows. Missing {len(missing_caption_ids)} "
+                    f"patch_id values, examples: {examples}"
+                )
 
         self.transform = transform
         self.point_token = ["", ""] if point_token is None else point_token
@@ -455,7 +540,13 @@ class BENTxTDataset(Dataset):
         text_in = sample.input.replace("<ref>", self.ref_token[0]).replace("</ref>", self.ref_token[1])
         text_in = text_in.replace("<point>", self.point_token[0]).replace("</point>", self.point_token[1])
 
-        if sample.type in {'binary', 'mcq', 'captioning', 'bounding box'}:
+        if (
+            sample.type == "captioning"
+            and self.use_location_redacted_captions
+            and self.location_redacted_captions is not None
+        ):
+            output = self.location_redacted_captions[str(sample.patch_id)]
+        elif sample.type in {'binary', 'mcq', 'captioning', 'bounding box'}:
             output = sample.output
         else:
             raise NotImplementedError(f"{sample.type} is not supported")
@@ -517,6 +608,8 @@ class BENTxTDataModule(pl.LightningDataModule):
             image_transforms_eval: Callable | None = None,
             point_token: Iterable[str] = None,
             ref_token: Iterable[str] = None,
+            use_location_redacted_captions: bool = False,
+            location_redacted_caption_file: str | Path | None = None,
     ):
         """
         Initialize the BigEarthNet.txt DataModule.
@@ -548,6 +641,12 @@ class BENTxTDataModule(pl.LightningDataModule):
             image_transforms_eval: Optional transform applied to normalized non-RGB imagery tensors for evaluation.
             point_token: Optional tuple of [start_token, end_token] to wrap <point> tags in text.
             ref_token: Optional tuple of [start_token, end_token] to wrap <ref> tags in text.
+            use_location_redacted_captions: Replace captioning targets with
+                location-redacted captions while leaving all other task targets
+                unchanged.
+            location_redacted_caption_file: Optional parquet with `patch_id`
+                and `refined_caption` columns. Required when
+                use_location_redacted_captions is true.
         """
         super().__init__()
         self.num_workers_dataloader = num_workers_dataloader
@@ -580,6 +679,8 @@ class BENTxTDataModule(pl.LightningDataModule):
             "climate_zones": climate_zones,
             "point_token": point_token,
             "ref_token": ref_token,
+            "use_location_redacted_captions": use_location_redacted_captions,
+            "location_redacted_caption_file": location_redacted_caption_file,
         }
 
         self.mean = [means[band] for band in self.bands]

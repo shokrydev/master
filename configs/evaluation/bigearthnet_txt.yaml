@@ -33,5 +33,7 @@ data:
     bands: S1S2-10m20m
     rgb_render_mode: copernicus
     rgb_quantile: 0.90
+    use_location_redacted_captions: false
+    location_redacted_caption_file: null
     batch_size: 1
     num_workers_dataloader: 4

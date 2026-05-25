@@ -1,0 +1,9 @@
+# Override for caption-control runs that use location-redacted caption targets.
+
+paths:
+  location_redacted_caption_file: ${oc.env:BENTXT_LOCATION_REDACTED_CAPTION_FILE,""}
+
+data:
+  init_args:
+    use_location_redacted_captions: true
+    location_redacted_caption_file: ${paths.location_redacted_caption_file}

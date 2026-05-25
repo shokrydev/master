@@ -1,12 +1,53 @@
 import unittest
+from tempfile import TemporaryDirectory
 
+import pandas as pd
 import torch
 from PIL import Image
 
-from src.data_modules.ben_txt_datamodule import _sentinel2_rgb_tensor_to_pil, collate_normalized
+from src.data_modules.ben_txt_datamodule import (
+    _load_location_redacted_captions,
+    _sentinel2_rgb_tensor_to_pil,
+    collate_normalized,
+)
 
 
 class TestBENTxTDataBoundary(unittest.TestCase):
+    def test_location_redacted_caption_file_loads_patch_mapping(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/captions.parquet"
+            pd.DataFrame(
+                {
+                    "patch_id": ["patch-a", "patch-b"],
+                    "refined_caption": ["caption a", "caption b"],
+                }
+            ).to_parquet(path)
+
+            captions = _load_location_redacted_captions(path)
+
+        self.assertEqual(captions, {"patch-a": "caption a", "patch-b": "caption b"})
+
+    def test_location_redacted_caption_file_rejects_missing_columns(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/captions.parquet"
+            pd.DataFrame({"patch_id": ["patch-a"], "caption": ["caption a"]}).to_parquet(path)
+
+            with self.assertRaisesRegex(ValueError, "missing columns"):
+                _load_location_redacted_captions(path)
+
+    def test_location_redacted_caption_file_rejects_duplicate_patch_ids(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/captions.parquet"
+            pd.DataFrame(
+                {
+                    "patch_id": ["patch-a", "patch-a"],
+                    "refined_caption": ["caption a", "caption b"],
+                }
+            ).to_parquet(path)
+
+            with self.assertRaisesRegex(ValueError, "duplicate patch_id"):
+                _load_location_redacted_captions(path)
+
     def test_sentinel2_rgb_tensor_is_rendered_to_pil_with_copernicus_scale(self) -> None:
         tensor = torch.tensor(
             [

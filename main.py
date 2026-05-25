@@ -23,6 +23,7 @@ class FinetuningCLI(LightningCLI):
         "bigearthnet_v2_lmdb_root",
         "bigearthnet_txt_parquet_path",
         "bigearthnet_encoder_dir",
+        "location_redacted_caption_file",
         "satclip_checkpoint_path",
         "gaia_root",
     )

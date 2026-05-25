@@ -7,6 +7,7 @@ import os
 import shlex
 from pathlib import Path
 
+import pyarrow.parquet as pq
 from omegaconf import OmegaConf
 
 
@@ -33,6 +34,22 @@ REQUIRED_ENV_VARS = (
     "FINETUNING_OUTPUT_ROOT",
     "SLURM_DEFAULT_PARTITION",
 )
+BENTXT_REQUIRED_COLUMNS = {
+    "ID",
+    "s1_name",
+    "patch_id",
+    "input",
+    "output",
+    "type",
+    "category",
+    "split",
+    "latitude",
+    "longitude",
+    "country",
+    "season",
+    "climate_zone",
+}
+LOCATION_REDACTED_CAPTION_COLUMNS = {"patch_id", "refined_caption"}
 
 
 def load_env(path: Path) -> None:
@@ -74,6 +91,16 @@ def require_path(path: Path, label: str, *, directory: bool) -> None:
     print(f"OK {label}: {path}")
 
 
+def require_parquet_columns(path: Path, required_columns: set[str], label: str) -> None:
+    columns = set(pq.ParquetFile(path).schema_arrow.names)
+    missing_columns = sorted(required_columns - columns)
+    if missing_columns:
+        raise SystemExit(
+            f"{label} is missing required parquet columns: {missing_columns}"
+        )
+    print(f"OK {label} columns: {path}")
+
+
 def load_lightning_config(config_file: Path) -> object:
     config = OmegaConf.load(config_file)
     unknown_keys = set(config.keys()) - LIGHTNING_CONFIG_KEYS
@@ -108,7 +135,19 @@ def check_env_paths() -> None:
         require_env(name)
 
     require_path(Path(require_env("BIGEARTHNET_V2_LMDB_ROOT")), "BigEarthNet-v2 LMDB environment", directory=True)
-    require_path(Path(require_env("BIGEARTHNET_TXT_PARQUET_PATH")), "BigEarthNet.txt parquet", directory=False)
+    bentxt_path = Path(require_env("BIGEARTHNET_TXT_PARQUET_PATH"))
+    require_path(bentxt_path, "BigEarthNet.txt parquet", directory=False)
+    require_parquet_columns(bentxt_path, BENTXT_REQUIRED_COLUMNS, "BigEarthNet.txt parquet")
+
+    location_redacted_path = os.environ.get("BENTXT_LOCATION_REDACTED_CAPTION_FILE")
+    if location_redacted_path:
+        caption_path = Path(location_redacted_path)
+        require_path(caption_path, "location-redacted caption parquet", directory=False)
+        require_parquet_columns(
+            caption_path,
+            LOCATION_REDACTED_CAPTION_COLUMNS,
+            "location-redacted caption parquet",
+        )
 
     encoder_dir = Path(require_env("BIGEARTHNET_ENCODER_DIR"))
     require_path(encoder_dir, "BigEarthNet encoder directory", directory=True)
@@ -159,6 +198,14 @@ def check_config_composition() -> None:
 
     if data_args.get("bands") != "S1S2-10m20m":
         raise SystemExit(f"Unexpected data.init_args.bands: {data_args.get('bands')!r}")
+    if data_args.get("use_location_redacted_captions") is not False:
+        raise SystemExit(
+            "Smoke config should use original BigEarthNet.txt caption targets by default."
+        )
+    if data_args.get("location_redacted_caption_file") is not None:
+        raise SystemExit(
+            "Smoke config should not set data.init_args.location_redacted_caption_file."
+        )
 
     print("OK BigEarthNet loc_embed smoke config composes and resolves.")
 
