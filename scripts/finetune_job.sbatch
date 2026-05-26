@@ -26,6 +26,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 CONDITION_CONFIG="${CONDITION_CONFIG:-}"
 SMOKE_CONFIG="${SMOKE_CONFIG:-}"
+CAPTION_TARGET_CONFIG="${CAPTION_TARGET_CONFIG:-}"
 
 cd "$SLURM_SUBMIT_DIR"
 
@@ -52,6 +53,12 @@ REQUIRED_ENV_VARS=(
 if [ "$CONDITION_CONFIG" = "configs/finetuning/loc_embed.yaml" ]; then
     REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
 fi
+if [ "$CAPTION_TARGET_CONFIG" = "configs/finetuning/location_redacted_captions.yaml" ]; then
+    REQUIRED_ENV_VARS+=(BENTXT_LOCATION_REDACTED_CAPTION_FILE)
+elif [ -n "$CAPTION_TARGET_CONFIG" ]; then
+    echo "Unsupported CAPTION_TARGET_CONFIG: $CAPTION_TARGET_CONFIG"
+    exit 1
+fi
 
 MISSING_ENV_VARS=()
 for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
@@ -73,16 +80,24 @@ fi
 if [ -n "$SMOKE_CONFIG" ]; then
     CONFIG_ARGS+=(--config "$SMOKE_CONFIG")
 fi
+if [ -n "$CAPTION_TARGET_CONFIG" ]; then
+    CONFIG_ARGS+=(--config "$CAPTION_TARGET_CONFIG")
+fi
 
 printf 'Config args:'
 printf ' %q' "${CONFIG_ARGS[@]}"
 printf '\n'
+echo "Caption target config: ${CAPTION_TARGET_CONFIG:-<none>}"
 echo "Output dir: $OUTPUT_DIR"
 echo "Adapter dir: $FINETUNING_ADAPTER_DIR"
 echo "Required paths:"
 for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
     echo "  $VAR_NAME=${!VAR_NAME}"
 done
+if [ -z "$CAPTION_TARGET_CONFIG" ]; then
+    echo "Optional paths:"
+    echo "  BENTXT_LOCATION_REDACTED_CAPTION_FILE=${BENTXT_LOCATION_REDACTED_CAPTION_FILE:-<not set>}"
+fi
 
 uv run python main.py fit \
     "${CONFIG_ARGS[@]}" \

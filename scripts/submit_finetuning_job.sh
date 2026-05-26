@@ -5,6 +5,7 @@
 # Usage:
 #   ./scripts/submit_finetuning_job.sh
 #   ./scripts/submit_finetuning_job.sh --condition loc_text --size 4B
+#   ./scripts/submit_finetuning_job.sh --caption-target location_redacted_caption
 #   ./scripts/submit_finetuning_job.sh --size 8B --partition big_job --time 7-00:00:00
 #   ./scripts/submit_finetuning_job.sh --dry-run
 # ============================================================================
@@ -22,6 +23,7 @@ set +a
 
 SIZE="2B"
 CONDITION="loc_embed"
+CAPTION_TARGET="caption"
 JOB_NAME=""
 PARTITION="${SLURM_DEFAULT_PARTITION:-}"
 TIME_LIMIT=""
@@ -45,6 +47,11 @@ while [[ $# -gt 0 ]]; do
         --condition)
             require_arg "$1" "${2:-}"
             CONDITION="$2"
+            shift 2
+            ;;
+        --caption-target)
+            require_arg "$1" "${2:-}"
+            CAPTION_TARGET="$2"
             shift 2
             ;;
         --name)
@@ -72,6 +79,19 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+case "$CAPTION_TARGET" in
+    caption)
+        CAPTION_TARGET_CONFIG=""
+        ;;
+    location_redacted_caption)
+        CAPTION_TARGET_CONFIG="configs/finetuning/location_redacted_captions.yaml"
+        ;;
+    *)
+        echo "Invalid --caption-target '$CAPTION_TARGET'. Use caption or location_redacted_caption."
+        exit 1
+        ;;
+esac
 
 case "$SIZE" in
     2B)
@@ -121,6 +141,9 @@ REQUIRED_ENV_VARS=(
 if [ "$CONDITION" = "loc_embed" ]; then
     REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
 fi
+if [ "$CAPTION_TARGET" = "location_redacted_caption" ]; then
+    REQUIRED_ENV_VARS+=(BENTXT_LOCATION_REDACTED_CAPTION_FILE)
+fi
 
 MISSING_ENV_VARS=()
 for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
@@ -144,8 +167,10 @@ echo "BigEarthNet.txt Finetuning Job Submission"
 echo "=============================================="
 echo "Base config: configs/finetuning/bigearthnet_txt_shared.yaml"
 echo "Condition config: ${CONDITION_CONFIG:-<none>}"
+echo "Caption target config: ${CAPTION_TARGET_CONFIG:-<none>}"
 echo "Smoke config: ${SMOKE_CONFIG:-<none>}"
 echo "Condition: $CONDITION"
+echo "Caption target: $CAPTION_TARGET"
 echo "Run kind: $RUN_KIND"
 echo "Size: $SIZE"
 echo "Model: $MODEL_NAME"
@@ -157,6 +182,10 @@ for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
     VALUE="${!VAR_NAME:-<missing>}"
     echo "  $VAR_NAME=$VALUE"
 done
+if [ "$CAPTION_TARGET" = "caption" ]; then
+    echo "Optional paths:"
+    echo "  BENTXT_LOCATION_REDACTED_CAPTION_FILE=${BENTXT_LOCATION_REDACTED_CAPTION_FILE:-<not set>}"
+fi
 echo "Extra args: ${EXTRA_ARGS[*]}"
 echo "=============================================="
 
@@ -169,7 +198,7 @@ FULL_CMD=(
 if [ -n "$TIME_LIMIT" ]; then
     FULL_CMD+=("--time=$TIME_LIMIT")
 fi
-FULL_CMD+=("--export=ALL,CONDITION_CONFIG=$CONDITION_CONFIG,SMOKE_CONFIG=$SMOKE_CONFIG" "$SCRIPT")
+FULL_CMD+=("--export=ALL,CONDITION_CONFIG=$CONDITION_CONFIG,SMOKE_CONFIG=$SMOKE_CONFIG,CAPTION_TARGET_CONFIG=$CAPTION_TARGET_CONFIG" "$SCRIPT")
 FULL_CMD+=("--model.init_args.model_name_or_path" "$MODEL_NAME")
 FULL_CMD+=("${EXTRA_ARGS[@]}")
 

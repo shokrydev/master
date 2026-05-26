@@ -5,6 +5,7 @@
 # Usage:
 #   ./scripts/submit_smoke_job.sh
 #   ./scripts/submit_smoke_job.sh --condition loc_text
+#   ./scripts/submit_smoke_job.sh --caption-target location_redacted_caption
 #   ./scripts/submit_smoke_job.sh --dry-run
 # ============================================================================
 
