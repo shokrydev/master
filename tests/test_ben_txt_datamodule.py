@@ -74,6 +74,10 @@ class TestBENTxTDataBoundary(unittest.TestCase):
                     "image": image,
                     "input_text": "Question 1",
                     "target_texts": ["Answer 1"],
+                    "sample_id": "row-1",
+                    "patch_id": "patch-1",
+                    "task_type": "captioning",
+                    "task_category": "caption",
                     "lat": 10.5,
                     "lon": 20.5,
                 },
@@ -81,6 +85,10 @@ class TestBENTxTDataBoundary(unittest.TestCase):
                     "image": image,
                     "input_text": "Question 2",
                     "target_texts": ["Answer 2a", "Answer 2b"],
+                    "sample_id": "row-2",
+                    "patch_id": "patch-2",
+                    "task_type": "binary",
+                    "task_category": "presence",
                     "lat": -1.0,
                     "lon": 42.0,
                 },
@@ -90,6 +98,10 @@ class TestBENTxTDataBoundary(unittest.TestCase):
         self.assertEqual(len(batch["image"]), 2)
         self.assertEqual(batch["input_text"], ["Question 1", "Question 2"])
         self.assertEqual(batch["target_texts"], [["Answer 1"], ["Answer 2a", "Answer 2b"]])
+        self.assertEqual(batch["sample_id"], ["row-1", "row-2"])
+        self.assertEqual(batch["patch_id"], ["patch-1", "patch-2"])
+        self.assertEqual(batch["task_type"], ["captioning", "binary"])
+        self.assertEqual(batch["task_category"], ["caption", "presence"])
         self.assertTrue(
             torch.equal(batch["lat"], torch.tensor([10.5, -1.0], dtype=torch.float64))
         )

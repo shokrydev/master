@@ -12,6 +12,10 @@ class GeoAwareCollator:
       - target_texts
       - lat
       - lon
+      - sample_id (optional)
+      - patch_id (optional)
+      - task_type (optional)
+      - task_category (optional)
       - non_rgb_imagery (optional)
       - non_rgb_bands (optional)
 
@@ -60,6 +64,12 @@ class GeoAwareCollator:
     def __call__(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         # Convert normalized samples to the message format expected by Unsloth.
         lats, lons, target_texts_batch = [], [], []
+        optional_metadata = {
+            "sample_id": [],
+            "patch_id": [],
+            "task_type": [],
+            "task_category": [],
+        }
         non_rgb_images = []
         non_rgb_bands = []
         has_non_rgb_imagery = ["non_rgb_imagery" in item for item in items]
@@ -85,6 +95,9 @@ class GeoAwareCollator:
             lats.append(lat)
             lons.append(lon)
             target_texts_batch.append(targets)
+            for key, values in optional_metadata.items():
+                if key in item:
+                    values.append(item[key])
             input_text = self._with_location_text(input_text, lat, lon)
             if has_non_rgb_imagery[0]:
                 non_rgb_image = item["non_rgb_imagery"]
@@ -101,13 +114,17 @@ class GeoAwareCollator:
         # Inner collation (input_ids, attention_mask, labels, pixel_values, ...)
         batch = self.inner_collator(cleaned)
 
-        # Re-attach geo tensors (always present in normalized schema).
-        if self.include_coordinates:
-            batch["lat"] = torch.tensor(lats, dtype=torch.float64)
-            batch["lon"] = torch.tensor(lons, dtype=torch.float64)
+        # Re-attach geo tensors and sample metadata for conditioning/evaluation.
+        batch["lat"] = torch.tensor(lats, dtype=torch.float64)
+        batch["lon"] = torch.tensor(lons, dtype=torch.float64)
 
         # Keep full targets for multi-reference evaluation.
         batch["target_texts"] = target_texts_batch
+        for key, values in optional_metadata.items():
+            if values:
+                if len(values) != len(items):
+                    raise ValueError(f"Either every sample or no sample must include {key!r}")
+                batch[key] = [str(value) for value in values]
         if non_rgb_images:
             batch["non_rgb_imagery"] = torch.stack(non_rgb_images, dim=0)
             if any(bands is not None for bands in non_rgb_bands):

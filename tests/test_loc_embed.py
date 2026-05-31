@@ -295,6 +295,19 @@ class InsertTokenHelpersTest(unittest.TestCase):
 
 
 class PrepareModelInputsTest(unittest.TestCase):
+    def test_caption_indices_select_only_captioning_rows_when_metadata_exists(self):
+        indices = Qwen3VLModule._caption_indices(
+            ["caption", "yes", "option a"],
+            {"task_type": ["captioning", "binary", "mcq"]},
+        )
+
+        self.assertEqual(indices, [0])
+
+    def test_caption_indices_default_to_all_rows_without_task_metadata(self):
+        indices = Qwen3VLModule._caption_indices(["a", "b"], {"task_type": None})
+
+        self.assertEqual(indices, [0, 1])
+
     def test_prepare_model_inputs_inserts_ignore_labels_at_visual_boundary(self):
         module = _build_encoder_test_module(num_location_tokens=2)
         batch = {
@@ -304,9 +317,15 @@ class PrepareModelInputsTest(unittest.TestCase):
             "lat": torch.tensor([52.5, -33.9], dtype=torch.float64),
             "lon": torch.tensor([13.4, 151.2], dtype=torch.float64),
             "target_texts": [["a"], ["b"]],
+            "sample_id": ["row-1", "row-2"],
+            "patch_id": ["patch-1", "patch-2"],
+            "task_type": ["captioning", "binary"],
+            "task_category": ["caption", "presence"],
         }
 
-        model_batch, target_texts, lat, lon, non_rgb_imagery = module._prepare_model_inputs(batch)
+        model_batch, target_texts, lat, lon, non_rgb_imagery, metadata = (
+            module._prepare_model_inputs(batch)
+        )
 
         expected_labels = torch.tensor(
             [[11, 12, -100, -100, 13, 14, 15], [21, -100, -100, 22, 23, 24, 25]]
@@ -318,6 +337,11 @@ class PrepareModelInputsTest(unittest.TestCase):
         self.assertTrue(torch.equal(lon, torch.tensor([13.4, 151.2], dtype=torch.float64)))
         self.assertIsNone(non_rgb_imagery["tensor"])
         self.assertIsNone(non_rgb_imagery["bands"])
+        self.assertEqual(metadata["sample_id"], ["row-1", "row-2"])
+        self.assertEqual(metadata["patch_id"], ["patch-1", "patch-2"])
+        self.assertEqual(metadata["task_type"], ["captioning", "binary"])
+        self.assertEqual(metadata["task_category"], ["caption", "presence"])
+        self.assertNotIn("task_type", model_batch)
 
     def test_prepare_model_inputs_falls_back_to_sequence_end_without_visual_tokens(self):
         module = _build_encoder_test_module(num_location_tokens=1)
@@ -329,7 +353,7 @@ class PrepareModelInputsTest(unittest.TestCase):
             "lon": torch.tensor([2.0], dtype=torch.float64),
         }
 
-        model_batch, _, _, _, _ = module._prepare_model_inputs(batch)
+        model_batch, _, _, _, _, _ = module._prepare_model_inputs(batch)
 
         expected_labels = torch.tensor([[11, 12, 13, -100, -100, -100]])
         self.assertTrue(torch.equal(model_batch["labels"], expected_labels))
@@ -354,7 +378,9 @@ class PrepareModelInputsTest(unittest.TestCase):
             "non_rgb_bands": ["VV", "VH", "B04", "B03", "B02"],
         }
 
-        model_batch, target_texts, lat, lon, non_rgb_imagery = module._prepare_model_inputs(batch)
+        model_batch, target_texts, lat, lon, non_rgb_imagery, metadata = (
+            module._prepare_model_inputs(batch)
+        )
 
         self.assertTrue(torch.equal(model_batch["labels"], torch.tensor([[11, 12, 13]])))
         self.assertNotIn("non_rgb_imagery", model_batch)
@@ -365,6 +391,7 @@ class PrepareModelInputsTest(unittest.TestCase):
         self.assertEqual(target_texts, [["ref"]])
         self.assertTrue(torch.equal(lat, torch.tensor([1.0], dtype=torch.float64)))
         self.assertTrue(torch.equal(lon, torch.tensor([2.0], dtype=torch.float64)))
+        self.assertIsNone(metadata["task_type"])
 
     def test_prepare_model_inputs_sets_non_rgb_state_and_masks_labels(self):
         module = object.__new__(Qwen3VLModule)
@@ -388,7 +415,7 @@ class PrepareModelInputsTest(unittest.TestCase):
             "non_rgb_bands": ["VV", "VH"],
         }
 
-        model_batch, _, _, _, non_rgb_imagery = module._prepare_model_inputs(batch)
+        model_batch, _, _, _, non_rgb_imagery, _ = module._prepare_model_inputs(batch)
 
         expected_labels = torch.tensor([[11, -100, -100, 12, 13]])
         self.assertTrue(torch.equal(model_batch["labels"], expected_labels))

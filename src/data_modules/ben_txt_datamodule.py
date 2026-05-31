@@ -194,6 +194,12 @@ def collate_normalized(batch):
     latitudes = []
     longitudes = []
     non_rgb_bands = []
+    optional_metadata = {
+        "sample_id": [],
+        "patch_id": [],
+        "task_type": [],
+        "task_category": [],
+    }
 
     for item in batch:
         images.append(item["image"])
@@ -204,6 +210,9 @@ def collate_normalized(batch):
         target_texts.append(item["target_texts"])
         latitudes.append(item["lat"])
         longitudes.append(item["lon"])
+        for key, values in optional_metadata.items():
+            if key in item:
+                values.append(item[key])
 
     collated = {
         "image": images,
@@ -212,6 +221,11 @@ def collate_normalized(batch):
         "lat": torch.tensor(latitudes, dtype=torch.float64),
         "lon": torch.tensor(longitudes, dtype=torch.float64),
     }
+    for key, values in optional_metadata.items():
+        if values:
+            if len(values) != len(batch):
+                raise ValueError(f"Either every sample or no sample must include {key!r}")
+            collated[key] = values
 
     if non_rgb_images:
         collated["non_rgb_imagery"] = torch.stack(non_rgb_images, dim=0)
@@ -513,6 +527,10 @@ class BENTxTDataset(Dataset):
                 - 'non_rgb_bands': Band order of the non-RGB imagery tensor.
                 - 'input_text': The instruction or question for the VLM.
                 - 'target_texts': List containing the expected text output(s).
+                - 'sample_id': BigEarthNet.txt row id.
+                - 'patch_id': BigEarthNet patch id.
+                - 'task_type': BigEarthNet.txt task type.
+                - 'task_category': BigEarthNet.txt task category.
                 - 'lat': Latitude of the patch center.
                 - 'lon': Longitude of the patch center.
         """
@@ -557,6 +575,10 @@ class BENTxTDataset(Dataset):
             "non_rgb_bands": list(self.bands),
             "input_text": text_in,
             "target_texts": [str(output)],
+            "sample_id": str(sample.ID),
+            "patch_id": str(sample.patch_id),
+            "task_type": str(sample.type),
+            "task_category": str(sample.category),
             "lat": lat,
             "lon": lon,
         }

@@ -550,6 +550,12 @@ class Qwen3VLModule(L.LightningModule):
         lat = batch.pop("lat", None)
         lon = batch.pop("lon", None)
         target_texts = batch.pop("target_texts", None)
+        sample_metadata = {
+            "sample_id": batch.pop("sample_id", None),
+            "patch_id": batch.pop("patch_id", None),
+            "task_type": batch.pop("task_type", None),
+            "task_category": batch.pop("task_category", None),
+        }
         non_rgb_imagery = {
             "tensor": batch.pop("non_rgb_imagery", None),
             "bands": batch.pop("non_rgb_bands", None),
@@ -597,7 +603,7 @@ class Qwen3VLModule(L.LightningModule):
             )
             batch["labels"] = self._insert_tokens_2d(batch["labels"], ignore, insert_positions)
 
-        return batch, target_texts, lat, lon, non_rgb_imagery
+        return batch, target_texts, lat, lon, non_rgb_imagery, sample_metadata
 
     def _reset_projected_token_state(self) -> None:
         self._location_insertion_state = None
@@ -617,11 +623,25 @@ class Qwen3VLModule(L.LightningModule):
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Training step."""
-        batch, _, _, _, _ = self._prepare_model_inputs(batch)
+        batch, _, _, _, _, _ = self._prepare_model_inputs(batch)
         outputs = self.model(**batch)
         self._reset_projected_token_state()
         self.log("train/loss", outputs.loss, on_step=True, on_epoch=True, prog_bar=True)
         return outputs.loss
+
+    @staticmethod
+    def _caption_indices(
+        predictions: list[str],
+        sample_metadata: dict[str, Any],
+    ) -> list[int]:
+        task_types = sample_metadata.get("task_type")
+        if task_types is None:
+            return list(range(len(predictions)))
+        return [
+            index
+            for index, task_type in enumerate(task_types)
+            if str(task_type) == "captioning"
+        ]
 
     def _should_generate_val(self, batch_idx: int) -> bool:
         """Check whether to run generation for this validation batch."""
@@ -656,7 +676,7 @@ class Qwen3VLModule(L.LightningModule):
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Validation step with loss computation and optional generation metrics."""
-        batch, target_texts, _, _, _ = self._prepare_model_inputs(batch)
+        batch, target_texts, _, _, _, sample_metadata = self._prepare_model_inputs(batch)
         with torch.no_grad():
             outputs = self.model(**batch)
 
@@ -671,9 +691,13 @@ class Qwen3VLModule(L.LightningModule):
                 if batch_idx == 0 and predictions:
                     self.print(f"\n[Val Sample] Generated: {predictions[0][:500]}...")
 
-                # Accumulate for captioning metrics
                 if self.val_captioning_metrics is not None and target_texts is not None:
-                    self.val_captioning_metrics.update(predictions, target_texts)
+                    caption_indices = self._caption_indices(predictions, sample_metadata)
+                    if caption_indices:
+                        self.val_captioning_metrics.update(
+                            [predictions[index] for index in caption_indices],
+                            [target_texts[index] for index in caption_indices],
+                        )
 
                 result["generated"] = predictions[0] if predictions else ""
             except Exception as e:
@@ -692,7 +716,7 @@ class Qwen3VLModule(L.LightningModule):
 
     def test_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Test step — always generates and accumulates captioning metrics."""
-        batch, target_texts, lat, lon, _ = self._prepare_model_inputs(batch)
+        batch, target_texts, lat, lon, _, sample_metadata = self._prepare_model_inputs(batch)
         with torch.no_grad():
             outputs = self.model(**batch)
 
@@ -707,7 +731,12 @@ class Qwen3VLModule(L.LightningModule):
                     self.print(f"\n[Test Sample] Generated: {predictions[0][:500]}...")
 
                 if self.test_captioning_metrics is not None and target_texts is not None:
-                    self.test_captioning_metrics.update(predictions, target_texts)
+                    caption_indices = self._caption_indices(predictions, sample_metadata)
+                    if caption_indices:
+                        self.test_captioning_metrics.update(
+                            [predictions[index] for index in caption_indices],
+                            [target_texts[index] for index in caption_indices],
+                        )
 
                 # Accumulate per-sample predictions for JSON export
                 if self.test_predictions_path:
@@ -716,6 +745,9 @@ class Qwen3VLModule(L.LightningModule):
                             "prediction": pred,
                             "target_texts": target_texts[i] if target_texts else [],
                         }
+                        for key, values in sample_metadata.items():
+                            if values is not None:
+                                entry[key] = values[i]
                         if lat is not None:
                             entry["lat"] = float(lat[i])
                             entry["lon"] = float(lon[i])
