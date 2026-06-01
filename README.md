@@ -128,6 +128,12 @@ BigEarthNet `loc_embed` smoke config:
 uv run python scripts/check_server_setup.py
 ```
 
+METEOR caption scoring also needs the small WordNet resources used by NLTK:
+
+```bash
+uv run python -m nltk.downloader wordnet omw-1.4
+```
+
 ## Slurm Submission
 
 Use `submit_smoke_job.sh` for a short Slurm validation run before launching a

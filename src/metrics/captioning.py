@@ -4,6 +4,7 @@
 
 import nltk
 import torch
+from nltk.translate.meteor_score import meteor_score
 from torchmetrics import Metric
 
 
@@ -26,6 +27,7 @@ class CaptioningMetrics(Metric):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self._ensure_meteor_resources()
         self.add_state("predictions", default=[], dist_reduce_fx=None)
         self.add_state("references", default=[], dist_reduce_fx=None)
 
@@ -67,22 +69,26 @@ class CaptioningMetrics(Metric):
 
         return {k: v / n for k, v in sums.items()} if n > 0 else sums
 
+    def _ensure_meteor_resources(self) -> None:
+        """Check METEOR resources once when caption metrics are initialized."""
+        missing = []
+        for resource in ("corpora/wordnet", "corpora/omw-1.4"):
+            try:
+                nltk.data.find(resource)
+            except LookupError:
+                missing.append(resource)
+        if missing:
+            raise RuntimeError(
+                "METEOR requires NLTK WordNet data. Install it once with: "
+                "uv run python -m nltk.downloader wordnet omw-1.4"
+            )
+
     def _compute_meteor(self) -> float:
         """Compute METEOR using nltk (pure Python, no Java dependency).
 
         For multi-reference, nltk.meteor_score picks the best reference automatically.
         Returns the corpus-level average.
         """
-        from nltk.translate.meteor_score import meteor_score
-
-        try:
-            nltk.data.find("corpora/wordnet")
-        except LookupError as exc:
-            raise RuntimeError(
-                "NLTK wordnet resource is required for METEOR. "
-                "Install it explicitly with: python -m nltk.downloader wordnet"
-            ) from exc
-
         total = 0.0
         n = len(self.predictions)
         for pred, refs in zip(self.predictions, self.references, strict=True):
