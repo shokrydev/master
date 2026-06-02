@@ -54,7 +54,7 @@ class Qwen3VLModule(L.LightningModule):
         warmup_ratio: float = 0.1,
         max_steps: int | None = None,
         max_new_tokens: int = 256,
-        val_generate_batches: int = 0,
+        num_validation_generation_batches: int = 0,
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
         loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
         location_text_template: str | None = None,
@@ -91,9 +91,10 @@ class Qwen3VLModule(L.LightningModule):
             weight_decay: Weight decay for optimizer
             warmup_ratio: Warmup ratio for scheduler
             max_steps: Total training steps (for scheduler)
-            max_new_tokens: Max tokens to generate during validation
-            val_generate_batches: How many val batches to run generation on
-                (0 = no generation metrics, -1 = all batches). Test always generates.
+            max_new_tokens: Max tokens to generate for generated-answer metrics.
+            num_validation_generation_batches: Number of validation batches
+                that run autoregressive generation in addition to validation
+                loss. Use 0 for loss-only validation. Test always generates.
             system_prompt: Optional system message injected during chat formatting.
             loc_mode: Location conditioning mode ("no_loc", "loc_text", "loc_embed")
             location_text_template: Format string appended to the user prompt when
@@ -157,7 +158,7 @@ class Qwen3VLModule(L.LightningModule):
         self.warmup_ratio = warmup_ratio
         self.max_steps = max_steps
         self.max_new_tokens = max_new_tokens
-        self.val_generate_batches = val_generate_batches
+        self.num_validation_generation_batches = num_validation_generation_batches
         self.system_prompt = system_prompt
         self.loc_mode = loc_mode
         self.location_text_template = location_text_template
@@ -261,11 +262,12 @@ class Qwen3VLModule(L.LightningModule):
             if self.adapter_dir is not None:
                 self._load_non_rgb_projection_artifacts()
 
-        # Initialize captioning metrics
+        # Initialize generated-answer metrics only for stages that use them.
         from src.metrics.captioning import CaptioningMetrics
-        if self.val_generate_batches != 0:
+        if stage in {"fit", "validate"} and self.num_validation_generation_batches != 0:
             self.val_captioning_metrics = CaptioningMetrics()
-        self.test_captioning_metrics = CaptioningMetrics()
+        if stage == "test":
+            self.test_captioning_metrics = CaptioningMetrics()
 
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in self.model.parameters())
@@ -643,13 +645,9 @@ class Qwen3VLModule(L.LightningModule):
             if str(task_type) == "captioning"
         ]
 
-    def _should_generate_val(self, batch_idx: int) -> bool:
-        """Check whether to run generation for this validation batch."""
-        if self.val_generate_batches == 0:
-            return False
-        if self.val_generate_batches == -1:
-            return True
-        return batch_idx < self.val_generate_batches
+    def _should_run_validation_generation(self, batch_idx: int) -> bool:
+        """Check whether this validation batch should run free generation."""
+        return batch_idx < self.num_validation_generation_batches
 
     def _generate_for_batch(self, batch: dict[str, Any]) -> list[str]:
         """Run greedy generation on a batch and return decoded predictions."""
@@ -675,7 +673,7 @@ class Qwen3VLModule(L.LightningModule):
         return predictions
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
-        """Validation step with loss computation and optional generation metrics."""
+        """Validation step with loss and optional generated-answer metrics."""
         batch, target_texts, _, _, _, sample_metadata = self._prepare_model_inputs(batch)
         with torch.no_grad():
             outputs = self.model(**batch)
@@ -683,7 +681,7 @@ class Qwen3VLModule(L.LightningModule):
         self.log("val/loss", outputs.loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         result = {"loss": outputs.loss}
 
-        if self._should_generate_val(batch_idx) and self.max_new_tokens > 0:
+        if self._should_run_validation_generation(batch_idx) and self.max_new_tokens > 0:
             try:
                 predictions = self._generate_for_batch(batch)
 

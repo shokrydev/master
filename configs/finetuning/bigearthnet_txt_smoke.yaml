@@ -17,7 +17,7 @@ trainer:
 model:
   init_args:
     max_new_tokens: 32
-    val_generate_batches: 1
+    num_validation_generation_batches: 1
 
 data:
   init_args:
