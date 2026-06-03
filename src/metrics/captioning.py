@@ -2,8 +2,8 @@
 # Uses pycocoevalcap for BLEU/CIDEr, nltk for METEOR, rouge-score for ROUGE variants
 
 
-import nltk
 import torch
+from nltk.corpus import wordnet
 from nltk.translate.meteor_score import meteor_score
 from torchmetrics import Metric
 
@@ -71,17 +71,13 @@ class CaptioningMetrics(Metric):
 
     def _ensure_meteor_resources(self) -> None:
         """Check METEOR resources once when caption metrics are initialized."""
-        missing = []
-        for resource in ("corpora/wordnet", "corpora/omw-1.4"):
-            try:
-                nltk.data.find(resource)
-            except LookupError:
-                missing.append(resource)
-        if missing:
+        try:
+            wordnet.ensure_loaded()
+        except LookupError as exc:
             raise RuntimeError(
                 "METEOR requires NLTK WordNet data. Install it once with: "
                 "uv run python -m nltk.downloader wordnet omw-1.4"
-            )
+            ) from exc
 
     def _compute_meteor(self) -> float:
         """Compute METEOR using nltk (pure Python, no Java dependency).
