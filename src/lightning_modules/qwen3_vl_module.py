@@ -682,24 +682,21 @@ class Qwen3VLModule(L.LightningModule):
         result = {"loss": outputs.loss}
 
         if self._should_run_validation_generation(batch_idx) and self.max_new_tokens > 0:
-            try:
-                predictions = self._generate_for_batch(batch)
+            predictions = self._generate_for_batch(batch)
 
-                # Log a sample from the first batch
-                if batch_idx == 0 and predictions:
-                    self.print(f"\n[Val Sample] Generated: {predictions[0][:500]}...")
+            # Log a sample from the first batch
+            if batch_idx == 0 and predictions:
+                self.print(f"\n[Val Sample] Generated: {predictions[0][:500]}...")
 
-                if self.val_captioning_metrics is not None and target_texts is not None:
-                    caption_indices = self._caption_indices(predictions, sample_metadata)
-                    if caption_indices:
-                        self.val_captioning_metrics.update(
-                            [predictions[index] for index in caption_indices],
-                            [target_texts[index] for index in caption_indices],
-                        )
+            if self.val_captioning_metrics is not None and target_texts is not None:
+                caption_indices = self._caption_indices(predictions, sample_metadata)
+                if caption_indices:
+                    self.val_captioning_metrics.update(
+                        [predictions[index] for index in caption_indices],
+                        [target_texts[index] for index in caption_indices],
+                    )
 
-                result["generated"] = predictions[0] if predictions else ""
-            except Exception as e:
-                self.print(f"[Val] Generation failed: {e}")
+            result["generated"] = predictions[0] if predictions else ""
 
         self._reset_projected_token_state()
         return result
@@ -722,38 +719,35 @@ class Qwen3VLModule(L.LightningModule):
         result = {"loss": outputs.loss}
 
         if self.max_new_tokens > 0:
-            try:
-                predictions = self._generate_for_batch(batch)
+            predictions = self._generate_for_batch(batch)
 
-                if batch_idx == 0 and predictions:
-                    self.print(f"\n[Test Sample] Generated: {predictions[0][:500]}...")
+            if batch_idx == 0 and predictions:
+                self.print(f"\n[Test Sample] Generated: {predictions[0][:500]}...")
 
-                if self.test_captioning_metrics is not None and target_texts is not None:
-                    caption_indices = self._caption_indices(predictions, sample_metadata)
-                    if caption_indices:
-                        self.test_captioning_metrics.update(
-                            [predictions[index] for index in caption_indices],
-                            [target_texts[index] for index in caption_indices],
-                        )
+            if self.test_captioning_metrics is not None and target_texts is not None:
+                caption_indices = self._caption_indices(predictions, sample_metadata)
+                if caption_indices:
+                    self.test_captioning_metrics.update(
+                        [predictions[index] for index in caption_indices],
+                        [target_texts[index] for index in caption_indices],
+                    )
 
-                # Accumulate per-sample predictions for JSON export
-                if self.test_predictions_path:
-                    for i, pred in enumerate(predictions):
-                        entry = {
-                            "prediction": pred,
-                            "target_texts": target_texts[i] if target_texts else [],
-                        }
-                        for key, values in sample_metadata.items():
-                            if values is not None:
-                                entry[key] = values[i]
-                        if lat is not None:
-                            entry["lat"] = float(lat[i])
-                            entry["lon"] = float(lon[i])
-                        self._test_predictions.append(entry)
+            # Accumulate per-sample predictions for JSON export
+            if self.test_predictions_path:
+                for i, pred in enumerate(predictions):
+                    entry = {
+                        "prediction": pred,
+                        "target_texts": target_texts[i] if target_texts else [],
+                    }
+                    for key, values in sample_metadata.items():
+                        if values is not None:
+                            entry[key] = values[i]
+                    if lat is not None:
+                        entry["lat"] = float(lat[i])
+                        entry["lon"] = float(lon[i])
+                    self._test_predictions.append(entry)
 
-                result["generated"] = predictions[0] if predictions else ""
-            except Exception as e:
-                self.print(f"[Test] Generation failed: {e}")
+            result["generated"] = predictions[0] if predictions else ""
 
         self._reset_projected_token_state()
         return result
