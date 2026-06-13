@@ -17,6 +17,7 @@ import shlex
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -153,8 +154,10 @@ def parse_args() -> argparse.Namespace:
 def move_to_device(value: Any, device: torch.device) -> Any:
     if isinstance(value, torch.Tensor):
         return value.to(device)
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {key: move_to_device(item, device) for key, item in value.items()}
+    if hasattr(value, "to") and callable(value.to):
+        return value.to(device)
     if isinstance(value, list):
         return [move_to_device(item, device) for item in value]
     if isinstance(value, tuple):
@@ -183,6 +186,10 @@ def accumulation_steps(microbatch_size: int, target_effective_batch: int | None)
     if microbatch_size >= target_effective_batch:
         return 1
     return (target_effective_batch + microbatch_size - 1) // microbatch_size
+
+
+def default_json_output(args: argparse.Namespace) -> Path:
+    return Path("outputs/batch_profiles") / f"profile_{args.size}_{args.condition}.json"
 
 
 def make_batch(
@@ -467,10 +474,10 @@ def main_single(args: argparse.Namespace) -> dict[str, Any]:
         "results": results,
     }
 
-    if args.json_output is not None:
-        args.json_output.parent.mkdir(parents=True, exist_ok=True)
-        args.json_output.write_text(json.dumps(summary, indent=2))
-        print(f"\nWrote {args.json_output}")
+    json_output = args.json_output or default_json_output(args)
+    json_output.parent.mkdir(parents=True, exist_ok=True)
+    json_output.write_text(json.dumps(summary, indent=2))
+    print(f"\nWrote {json_output}")
 
     print("\nSummary")
     print(json.dumps(summary, indent=2))

@@ -209,6 +209,15 @@ class Qwen3VLModule(L.LightningModule):
             return
         self.print(*args, **kwargs)
 
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if mode:
+            if self.satclip is not None:
+                self.satclip.eval()
+            if self.non_rgb_encoder is not None:
+                self.non_rgb_encoder.eval()
+        return self
+
     def setup(self, stage: str):
         """Load model with Unsloth and configure QLoRA."""
         if self.model is not None:
