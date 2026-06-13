@@ -6,7 +6,7 @@
 #   ./scripts/submit_finetuning_job.sh
 #   ./scripts/submit_finetuning_job.sh --condition loc_text --size 4B
 #   ./scripts/submit_finetuning_job.sh --caption-target location_redacted_caption
-#   ./scripts/submit_finetuning_job.sh --size 8B --partition big_job --time 7-00:00:00
+#   ./scripts/submit_finetuning_job.sh --size 8B --partition big_job --time 7-00:00:00 --mem 128G --cpus 14
 #   ./scripts/submit_finetuning_job.sh --dry-run
 # ============================================================================
 
@@ -27,6 +27,8 @@ CAPTION_TARGET="caption"
 JOB_NAME=""
 PARTITION="${SLURM_DEFAULT_PARTITION:-}"
 TIME_LIMIT=""
+MEMORY=""
+CPUS=""
 DRY_RUN=false
 EXTRA_ARGS=()
 
@@ -67,6 +69,16 @@ while [[ $# -gt 0 ]]; do
         --time)
             require_arg "$1" "${2:-}"
             TIME_LIMIT="$2"
+            shift 2
+            ;;
+        --mem)
+            require_arg "$1" "${2:-}"
+            MEMORY="$2"
+            shift 2
+            ;;
+        --cpus)
+            require_arg "$1" "${2:-}"
+            CPUS="$2"
             shift 2
             ;;
         --dry-run)
@@ -177,6 +189,8 @@ echo "Model: $MODEL_NAME"
 echo "Job name: $JOB_NAME"
 echo "Slurm partition: $PARTITION"
 echo "Slurm time limit: ${TIME_LIMIT:-<partition default>}"
+echo "Slurm memory: ${MEMORY:-<sbatch default>}"
+echo "Slurm CPUs per task: ${CPUS:-<sbatch default>}"
 echo "Required paths:"
 for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
     VALUE="${!VAR_NAME:-<missing>}"
@@ -197,6 +211,12 @@ FULL_CMD=(
 )
 if [ -n "$TIME_LIMIT" ]; then
     FULL_CMD+=("--time=$TIME_LIMIT")
+fi
+if [ -n "$MEMORY" ]; then
+    FULL_CMD+=("--mem=$MEMORY")
+fi
+if [ -n "$CPUS" ]; then
+    FULL_CMD+=("--cpus-per-task=$CPUS")
 fi
 FULL_CMD+=("--export=ALL,CONDITION_CONFIG=$CONDITION_CONFIG,SMOKE_CONFIG=$SMOKE_CONFIG,CAPTION_TARGET_CONFIG=$CAPTION_TARGET_CONFIG" "$SCRIPT")
 FULL_CMD+=("--model.init_args.model_name_or_path" "$MODEL_NAME")

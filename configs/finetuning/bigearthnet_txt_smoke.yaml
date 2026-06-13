@@ -21,8 +21,3 @@ model:
   init_args:
     max_new_tokens: 32
     num_validation_generation_batches: 1
-
-data:
-  init_args:
-    batch_size: 1
-    num_workers_dataloader: 4

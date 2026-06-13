@@ -5,7 +5,7 @@
 # Usage:
 #   ./scripts/submit_profile_job.sh --dry-run
 #   ./scripts/submit_profile_job.sh --size 8B --condition loc_embed
-#   ./scripts/submit_profile_job.sh --partition big_job --time 1-00:00:00 --size 8B
+#   ./scripts/submit_profile_job.sh --partition big_job --time 1-00:00:00 --mem 128G --cpus 14 --size 8B
 # ============================================================================
 
 set -e
@@ -24,6 +24,8 @@ CONDITION="loc_embed"
 JOB_NAME=""
 PARTITION="${SLURM_DEFAULT_PARTITION:-}"
 TIME_LIMIT=""
+MEMORY=""
+CPUS=""
 DRY_RUN=false
 PROFILE_ARGS=()
 
@@ -61,6 +63,16 @@ while [[ $# -gt 0 ]]; do
         --time)
             require_arg "$1" "${2:-}"
             TIME_LIMIT="$2"
+            shift 2
+            ;;
+        --mem)
+            require_arg "$1" "${2:-}"
+            MEMORY="$2"
+            shift 2
+            ;;
+        --cpus)
+            require_arg "$1" "${2:-}"
+            CPUS="$2"
             shift 2
             ;;
         --dry-run)
@@ -128,6 +140,8 @@ echo "Condition: $CONDITION"
 echo "Job name: $JOB_NAME"
 echo "Slurm partition: $PARTITION"
 echo "Slurm time limit: ${TIME_LIMIT:-<partition default>}"
+echo "Slurm memory: ${MEMORY:-<sbatch default>}"
+echo "Slurm CPUs per task: ${CPUS:-<sbatch default>}"
 echo "Required paths:"
 for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
     VALUE="${!VAR_NAME:-<missing>}"
@@ -143,6 +157,12 @@ FULL_CMD=(
 )
 if [ -n "$TIME_LIMIT" ]; then
     FULL_CMD+=("--time=$TIME_LIMIT")
+fi
+if [ -n "$MEMORY" ]; then
+    FULL_CMD+=("--mem=$MEMORY")
+fi
+if [ -n "$CPUS" ]; then
+    FULL_CMD+=("--cpus-per-task=$CPUS")
 fi
 FULL_CMD+=("scripts/profile_bentxt_batch_size.sbatch")
 FULL_CMD+=("${PROFILE_ARGS[@]}")
