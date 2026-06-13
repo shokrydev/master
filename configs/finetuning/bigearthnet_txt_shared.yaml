@@ -22,6 +22,10 @@ trainer:
   max_steps: 5000
   accumulate_grad_batches: 8
 
+  # BigEarthNet.txt validation has millions of task rows. During finetuning,
+  # validation is a bounded loss proxy; full task-aware metrics belong to the
+  # separate evaluation/export workflow.
+  limit_val_batches: 128
   val_check_interval: 250
   check_val_every_n_epoch: null
 
