@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import unsloth  # noqa: F401  # Must be imported before transformers for Unsloth optimizations
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -390,9 +391,6 @@ def main_single(args: argparse.Namespace) -> dict[str, Any]:
         num_location_tokens=1,
     )
 
-    # This script drives the module directly, outside Lightning's Trainer.
-    # Collator attachment to a Trainer datamodule is therefore intentionally skipped.
-    module._set_datamodule_collator = lambda: None
     module.setup("fit")
     module.to(device)
     module.train()

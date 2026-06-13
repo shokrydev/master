@@ -193,6 +193,22 @@ class Qwen3VLModule(L.LightningModule):
         self.val_captioning_metrics = None
         self.test_captioning_metrics = None
 
+    def _trainer_or_none(self) -> Any | None:
+        """Return the attached Trainer, or None for direct utility execution."""
+        try:
+            return self.trainer
+        except RuntimeError as error:
+            if "not attached to a `Trainer`" not in str(error):
+                raise
+            return None
+
+    def _print(self, *args: Any, **kwargs: Any) -> None:
+        """Print inside or outside a Lightning Trainer."""
+        if self._trainer_or_none() is None:
+            print(*args, **kwargs)
+            return
+        self.print(*args, **kwargs)
+
     def setup(self, stage: str):
         """Load model with Unsloth and configure QLoRA."""
         if self.model is not None:
@@ -281,12 +297,14 @@ class Qwen3VLModule(L.LightningModule):
             non_rgb_proj_params = sum(p.numel() for p in self.non_rgb_modality_projection.parameters())
             trainable_params += non_rgb_proj_params
             total_params += non_rgb_proj_params
-        self.print(f"Trainable params: {trainable_params:,} / {total_params:,} "
-                   f"({100 * trainable_params / total_params:.2f}%)")
+        self._print(
+            f"Trainable params: {trainable_params:,} / {total_params:,} "
+            f"({100 * trainable_params / total_params:.2f}%)"
+        )
         if self.location_modality_projection is not None:
-            self.print(f"LocationModalityProjection params: {location_proj_params:,}")
+            self._print(f"LocationModalityProjection params: {location_proj_params:,}")
         if self.non_rgb_modality_projection is not None:
-            self.print(f"NonRGBModalityProjection params: {non_rgb_proj_params:,}")
+            self._print(f"NonRGBModalityProjection params: {non_rgb_proj_params:,}")
 
     def _get_text_hidden_size(self) -> int:
         """Return the Qwen text hidden size behind the PEFT wrapper."""
@@ -308,7 +326,7 @@ class Qwen3VLModule(L.LightningModule):
         self._geo_hook_handle = language_model.register_forward_pre_hook(
             self._projected_token_insertion_hook, with_kwargs=True
         )
-        self.print(f"Registered projected token hook on {type(language_model).__name__}")
+        self._print(f"Registered projected token hook on {type(language_model).__name__}")
 
     def _load_location_projection_artifacts(self) -> None:
         """Load the saved location projection that lives outside the PEFT adapter package."""
@@ -367,7 +385,7 @@ class Qwen3VLModule(L.LightningModule):
             num_tokens=self.num_non_rgb_tokens,
         ).to(self.device)
         self._register_projected_token_hook()
-        self.print(f"NonRGBModalityProjection: {encoder_dim} -> hidden x {self.num_non_rgb_tokens}")
+        self._print(f"NonRGBModalityProjection: {encoder_dim} -> hidden x {self.num_non_rgb_tokens}")
 
     def _setup_loc_embed(self):
         """Initialize SatCLIP encoder and LocationModalityProjection for loc_embed mode."""
@@ -393,7 +411,10 @@ class Qwen3VLModule(L.LightningModule):
         ).to(self.device)
 
         self._register_projected_token_hook()
-        self.print(f"LocationModalityProjection: {self.satclip_dim} -> {hidden_size} x {self.num_location_tokens}")
+        self._print(
+            f"LocationModalityProjection: "
+            f"{self.satclip_dim} -> {hidden_size} x {self.num_location_tokens}"
+        )
 
     @staticmethod
     def _insert_tokens_2d(
@@ -615,7 +636,8 @@ class Qwen3VLModule(L.LightningModule):
         """Attach the collator to the active datamodule once it exists."""
         if self._collator is None:
             return
-        datamodule = getattr(self.trainer, "datamodule", None)
+        trainer = self._trainer_or_none()
+        datamodule = getattr(trainer, "datamodule", None) if trainer is not None else None
         if datamodule is not None and hasattr(datamodule, "set_collator"):
             datamodule.set_collator(self._collator)
 
@@ -703,7 +725,7 @@ class Qwen3VLModule(L.LightningModule):
 
             # Log a sample from the first batch
             if batch_idx == 0 and predictions:
-                self.print(f"\n[Val Sample] Generated: {predictions[0][:500]}...")
+                self._print(f"\n[Val Sample] Generated: {predictions[0][:500]}...")
 
             if self.val_captioning_metrics is not None and target_texts is not None:
                 caption_indices = self._caption_indices(predictions, sample_metadata)
@@ -747,7 +769,7 @@ class Qwen3VLModule(L.LightningModule):
             predictions = self._generate_for_batch(batch)
 
             if batch_idx == 0 and predictions:
-                self.print(f"\n[Test Sample] Generated: {predictions[0][:500]}...")
+                self._print(f"\n[Test Sample] Generated: {predictions[0][:500]}...")
 
             if self.test_captioning_metrics is not None and target_texts is not None:
                 caption_indices = self._caption_indices(predictions, sample_metadata)
@@ -790,7 +812,7 @@ class Qwen3VLModule(L.LightningModule):
             Path(self.test_predictions_path).parent.mkdir(parents=True, exist_ok=True)
             with open(self.test_predictions_path, "w") as f:
                 json.dump(self._test_predictions, f, indent=2)
-            self.print(f"Saved {len(self._test_predictions)} predictions to {self.test_predictions_path}")
+            self._print(f"Saved {len(self._test_predictions)} predictions to {self.test_predictions_path}")
             self._test_predictions = []
 
     def configure_optimizers(self):
@@ -827,15 +849,17 @@ class Qwen3VLModule(L.LightningModule):
             lr=self.learning_rate,
         )
 
+        trainer = self._trainer_or_none()
+
         if self.max_steps is not None:
             total_steps = self.max_steps
-        elif self.trainer is not None and self.trainer.max_steps > 0:
-            total_steps = self.trainer.max_steps
-        elif self.trainer is not None and hasattr(self.trainer, "estimated_stepping_batches"):
-            total_steps = self.trainer.estimated_stepping_batches
+        elif trainer is not None and trainer.max_steps > 0:
+            total_steps = trainer.max_steps
+        elif trainer is not None and hasattr(trainer, "estimated_stepping_batches"):
+            total_steps = trainer.estimated_stepping_batches
         else:
             total_steps = 10000
-            self.print(
+            self._print(
                 "WARNING: Could not determine total training steps. "
                 "Defaulting to 10000 for LR schedule. Set max_steps or trainer.max_steps explicitly."
             )
