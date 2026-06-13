@@ -626,9 +626,17 @@ class Qwen3VLModule(L.LightningModule):
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Training step."""
         batch, _, _, _, _, _ = self._prepare_model_inputs(batch)
+        batch_size = batch["input_ids"].shape[0]
         outputs = self.model(**batch)
         self._reset_projected_token_state()
-        self.log("train/loss", outputs.loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log(
+            "train/loss",
+            outputs.loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            batch_size=batch_size,
+        )
         return outputs.loss
 
     @staticmethod
@@ -675,10 +683,19 @@ class Qwen3VLModule(L.LightningModule):
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Validation step with loss and optional generated-answer metrics."""
         batch, target_texts, _, _, _, sample_metadata = self._prepare_model_inputs(batch)
+        batch_size = batch["input_ids"].shape[0]
         with torch.no_grad():
             outputs = self.model(**batch)
 
-        self.log("val/loss", outputs.loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(
+            "val/loss",
+            outputs.loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+            batch_size=batch_size,
+        )
         result = {"loss": outputs.loss}
 
         if self._should_run_validation_generation(batch_idx) and self.max_new_tokens > 0:
@@ -712,10 +729,18 @@ class Qwen3VLModule(L.LightningModule):
     def test_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Test step — always generates and accumulates captioning metrics."""
         batch, target_texts, lat, lon, _, sample_metadata = self._prepare_model_inputs(batch)
+        batch_size = batch["input_ids"].shape[0]
         with torch.no_grad():
             outputs = self.model(**batch)
 
-        self.log("test/loss", outputs.loss, on_step=False, on_epoch=True, sync_dist=True)
+        self.log(
+            "test/loss",
+            outputs.loss,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+            batch_size=batch_size,
+        )
         result = {"loss": outputs.loss}
 
         if self.max_new_tokens > 0:
