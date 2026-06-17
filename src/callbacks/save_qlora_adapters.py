@@ -11,15 +11,16 @@ class SaveQLoRAAdaptersCallback(Callback):
     def __init__(
         self,
         dirpath: str,
+        best_dirpath: str | None = None,
         monitor: str = "val/loss",
         mode: str = "min",
     ) -> None:
         super().__init__()
         self.dirpath = Path(dirpath)
+        self.best_dirpath = Path(best_dirpath) if best_dirpath is not None else None
         self.monitor = monitor
         self.mode = mode
         self.best_score: float | None = None
-        self._saved_once = False
 
     def _is_better(self, current: float) -> bool:
         if self.best_score is None:
@@ -30,29 +31,30 @@ class SaveQLoRAAdaptersCallback(Callback):
             return current > self.best_score
         raise ValueError(f"Unsupported mode: {self.mode}")
 
-    def _save_adapters(self, pl_module: L.LightningModule) -> None:
-        self.dirpath.mkdir(parents=True, exist_ok=True)
-        pl_module.model.save_pretrained(self.dirpath)
-        pl_module.tokenizer.save_pretrained(self.dirpath)
+    def _save_adapters(self, pl_module: L.LightningModule, dirpath: Path) -> None:
+        dirpath.mkdir(parents=True, exist_ok=True)
+        pl_module.model.save_pretrained(dirpath)
+        pl_module.tokenizer.save_pretrained(dirpath)
 
-        projection_path = self.dirpath / "location_modality_projection.safetensors"
+        projection_path = dirpath / "location_modality_projection.safetensors"
         location_projection = getattr(pl_module, "location_modality_projection", None)
         if location_projection is not None:
             save_file(location_projection.state_dict(), projection_path)
         elif projection_path.exists():
             projection_path.unlink()
 
-        non_rgb_projection_path = self.dirpath / "non_rgb_modality_projection.safetensors"
+        non_rgb_projection_path = dirpath / "non_rgb_modality_projection.safetensors"
         non_rgb_projection = getattr(pl_module, "non_rgb_modality_projection", None)
         if non_rgb_projection is not None:
             save_file(non_rgb_projection.state_dict(), non_rgb_projection_path)
         elif non_rgb_projection_path.exists():
             non_rgb_projection_path.unlink()
 
-        self._saved_once = True
-        pl_module.print(f"Saved QLoRA adapter bundle to {self.dirpath}")
+        pl_module.print(f"Saved QLoRA adapter bundle to {dirpath}")
 
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        if self.best_dirpath is None:
+            return
         if trainer.sanity_checking:
             return
 
@@ -63,9 +65,8 @@ class SaveQLoRAAdaptersCallback(Callback):
         current_value = float(current)
         if self._is_better(current_value):
             self.best_score = current_value
-            self._save_adapters(pl_module)
+            self._save_adapters(pl_module, self.best_dirpath)
             pl_module.print(f"Updated best {self.monitor}: {current_value:.4f}")
 
     def on_train_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
-        if not self._saved_once:
-            self._save_adapters(pl_module)
+        self._save_adapters(pl_module, self.dirpath)

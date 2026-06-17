@@ -142,6 +142,10 @@ RUN_KIND="full"
 if [ -n "$SMOKE_CONFIG" ]; then
     RUN_KIND="smoke"
 fi
+VALIDATION_CONFIG=""
+if [ "$SIZE" = "2B" ] && [ "$RUN_KIND" = "full" ]; then
+    VALIDATION_CONFIG="configs/finetuning/bigearthnet_txt_bounded_validation_monitor.yaml"
+fi
 
 REQUIRED_ENV_VARS=(
     BIGEARTHNET_V2_LMDB_ROOT
@@ -178,6 +182,7 @@ echo "=============================================="
 echo "BigEarthNet.txt Finetuning Job Submission"
 echo "=============================================="
 echo "Base config: configs/finetuning/bigearthnet_txt_shared.yaml"
+echo "Validation config: ${VALIDATION_CONFIG:-<none>}"
 echo "Condition config: ${CONDITION_CONFIG:-<none>}"
 echo "Caption target config: ${CAPTION_TARGET_CONFIG:-<none>}"
 echo "Smoke config: ${SMOKE_CONFIG:-<none>}"
@@ -218,7 +223,7 @@ fi
 if [ -n "$CPUS" ]; then
     FULL_CMD+=("--cpus-per-task=$CPUS")
 fi
-FULL_CMD+=("--export=ALL,CONDITION_CONFIG=$CONDITION_CONFIG,SMOKE_CONFIG=$SMOKE_CONFIG,CAPTION_TARGET_CONFIG=$CAPTION_TARGET_CONFIG" "$SCRIPT")
+FULL_CMD+=("--export=ALL,CONDITION_CONFIG=$CONDITION_CONFIG,VALIDATION_CONFIG=$VALIDATION_CONFIG,SMOKE_CONFIG=$SMOKE_CONFIG,CAPTION_TARGET_CONFIG=$CAPTION_TARGET_CONFIG" "$SCRIPT")
 FULL_CMD+=("--model.init_args.model_name_or_path" "$MODEL_NAME")
 FULL_CMD+=("${EXTRA_ARGS[@]}")
 

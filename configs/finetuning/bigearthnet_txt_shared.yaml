@@ -10,6 +10,7 @@ seed_everything: 42
 paths:
   output_dir: ${oc.env:FINETUNING_OUTPUT_DIR,./outputs}
   adapter_dir: ${oc.env:FINETUNING_ADAPTER_DIR,${paths.output_dir}/qlora_adapter}
+  best_adapter_dir: ${paths.output_dir}/qlora_adapter_best_val
   bigearthnet_v2_lmdb_root: ${oc.env:BIGEARTHNET_V2_LMDB_ROOT,""}
   bigearthnet_txt_parquet_path: ${oc.env:BIGEARTHNET_TXT_PARQUET_PATH,""}
   bigearthnet_encoder_dir: ${oc.env:BIGEARTHNET_ENCODER_DIR,data/bigearthnet_encoders/mobilevit_s-all-v0.2.0}
@@ -19,15 +20,13 @@ trainer:
   devices: auto
   precision: bf16-mixed
 
-  max_steps: 5000
-  accumulate_grad_batches: 8
+  max_epochs: 1
+  accumulate_grad_batches: 1
 
-  # BigEarthNet.txt validation has millions of task rows. During finetuning,
-  # validation is a bounded loss proxy; full task-aware metrics belong to the
-  # separate evaluation/export workflow.
-  limit_val_batches: 128
-  val_check_interval: 250
-  check_val_every_n_epoch: null
+  # Main full-epoch runs keep fitting separate from evaluation. Validation is
+  # enabled only by explicit overrides such as the 2B convergence monitor.
+  limit_val_batches: 0
+  num_sanity_val_steps: 0
 
   log_every_n_steps: 10
   enable_progress_bar: true
@@ -47,19 +46,13 @@ trainer:
     - class_path: src.callbacks.SaveQLoRAAdaptersCallback
       init_args:
         dirpath: ${paths.adapter_dir}
+        best_dirpath: ${paths.best_adapter_dir}
         monitor: val/loss
         mode: min
 
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
-
-    - class_path: lightning.pytorch.callbacks.EarlyStopping
-      init_args:
-        monitor: val/loss
-        patience: 10
-        mode: min
-        min_delta: 0.001
 
     - class_path: lightning.pytorch.callbacks.RichProgressBar
       init_args:
@@ -108,5 +101,5 @@ data:
     rgb_quantile: 0.90
     use_location_redacted_captions: false
     location_redacted_caption_file: null
-    batch_size: 1
+    batch_size: 128
     num_workers_dataloader: 12

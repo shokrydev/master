@@ -1,0 +1,15 @@
+# Bounded validation monitor for full-epoch BigEarthNet.txt runs.
+#
+# This is observational: it logs validation loss during fitting and may write a
+# secondary best-validation adapter. The final adapter remains the primary
+# artifact for thesis comparisons.
+
+trainer:
+  limit_val_batches: 64
+  val_check_interval: 1000
+  check_val_every_n_epoch: null
+  num_sanity_val_steps: 0
+
+model:
+  init_args:
+    num_validation_generation_batches: 0
