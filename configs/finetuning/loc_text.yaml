@@ -3,4 +3,4 @@
 model:
   init_args:
     loc_mode: loc_text
-    location_text_template: "Capture location: latitude {lat:.4f}, longitude {lon:.4f}."
+    location_text_template: "Location: {location}."

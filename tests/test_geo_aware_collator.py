@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from src.data_modules.geo_aware_collator import GeoAwareCollator
+from src.data_modules.geo_aware_collator import DEFAULT_LOCATION_TEXT_TEMPLATE, GeoAwareCollator
 
 
 class TestGeoAwareCollator(unittest.TestCase):
@@ -15,7 +15,6 @@ class TestGeoAwareCollator(unittest.TestCase):
 
         collator = GeoAwareCollator(
             inner_collator,
-            include_coordinates=True,
             system_prompt="You are a remote sensing image analysis assistant.",
         )
 
@@ -76,6 +75,37 @@ class TestGeoAwareCollator(unittest.TestCase):
             "Capture location: latitude 52.1235, longitude 13.9877.",
         )
 
+    def test_appends_compact_integer_location_text(self) -> None:
+        captured = {}
+
+        def inner_collator(cleaned):
+            captured["cleaned"] = cleaned
+            return {"input_ids": torch.tensor([[1, 2, 3]])}
+
+        collator = GeoAwareCollator(
+            inner_collator,
+            location_text_template=DEFAULT_LOCATION_TEXT_TEMPLATE,
+        )
+
+        collator(
+            [
+                {
+                    "image": object(),
+                    "input_text": "Which land cover classes are present?",
+                    "target_texts": ["Urban fabric"],
+                    "lat": -52.12346,
+                    "lon": 13.98765,
+                }
+            ]
+        )
+
+        user_text = captured["cleaned"][0]["messages"][0]["content"][0]["text"]
+        self.assertEqual(
+            user_text,
+            "Which land cover classes are present?\n"
+            "Location: 52°S, 14°E.",
+        )
+
     def test_re_attaches_non_rgb_tensor_without_sending_it_to_unsloth(self) -> None:
         captured = {}
 
@@ -83,7 +113,7 @@ class TestGeoAwareCollator(unittest.TestCase):
             captured["cleaned"] = cleaned
             return {"input_ids": torch.tensor([[1, 2, 3], [4, 5, 6]])}
 
-        collator = GeoAwareCollator(inner_collator, include_coordinates=False)
+        collator = GeoAwareCollator(inner_collator)
         first_non_rgb = torch.ones(3, 2, 2)
         second_non_rgb = torch.zeros(3, 2, 2)
 

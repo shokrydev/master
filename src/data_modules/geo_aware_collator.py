@@ -1,6 +1,31 @@
+import math
 from typing import Any
 
 import torch
+
+
+DEFAULT_LOCATION_TEXT_TEMPLATE = "Location: {location}."
+
+
+def _location_template_fields(lat: float, lon: float) -> dict[str, Any]:
+    return {
+        "lat": lat,
+        "lon": lon,
+        "location": _compact_integer_location(lat, lon),
+    }
+
+
+def _rounded_abs_degrees(value: float) -> int:
+    return math.floor(abs(value) + 0.5)
+
+
+def _compact_integer_location(lat: float, lon: float) -> str:
+    lat_hemisphere = "N" if lat >= 0 else "S"
+    lon_hemisphere = "E" if lon >= 0 else "W"
+    return (
+        f"{_rounded_abs_degrees(lat)}°{lat_hemisphere}, "
+        f"{_rounded_abs_degrees(lon)}°{lon_hemisphere}"
+    )
 
 
 class GeoAwareCollator:
@@ -27,12 +52,10 @@ class GeoAwareCollator:
     def __init__(
         self,
         inner_collator,
-        include_coordinates: bool = False,
         system_prompt: str | None = None,
         location_text_template: str | None = None,
     ):
         self.inner_collator = inner_collator
-        self.include_coordinates = include_coordinates
         self.system_prompt = system_prompt
         self.location_text_template = location_text_template
 
@@ -58,7 +81,7 @@ class GeoAwareCollator:
     def _with_location_text(self, input_text: str, lat: float, lon: float) -> str:
         if not self.location_text_template:
             return input_text
-        location_text = self.location_text_template.format(lat=lat, lon=lon)
+        location_text = self.location_text_template.format(**_location_template_fields(lat, lon))
         return f"{input_text}\n{location_text}"
 
     def __call__(self, items: list[dict[str, Any]]) -> dict[str, Any]:
@@ -86,12 +109,16 @@ class GeoAwareCollator:
 
             lat = item["lat"]
             lon = item["lon"]
-            assert isinstance(lat, float), (
-                f"Expected 'lat' to be float in normalized sample, got {type(lat).__name__}: {lat!r}"
-            )
-            assert isinstance(lon, float), (
-                f"Expected 'lon' to be float in normalized sample, got {type(lon).__name__}: {lon!r}"
-            )
+            if not isinstance(lat, float):
+                raise TypeError(
+                    "Expected 'lat' to be float in normalized sample, "
+                    f"got {type(lat).__name__}: {lat!r}"
+                )
+            if not isinstance(lon, float):
+                raise TypeError(
+                    "Expected 'lon' to be float in normalized sample, "
+                    f"got {type(lon).__name__}: {lon!r}"
+                )
             lats.append(lat)
             lons.append(lon)
             target_texts_batch.append(targets)

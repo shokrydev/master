@@ -347,6 +347,7 @@ def main_single(args: argparse.Namespace) -> dict[str, Any]:
     torch.manual_seed(args.seed)
 
     from src.data_modules.ben_txt_datamodule import BENTxTDataset
+    from src.data_modules.geo_aware_collator import DEFAULT_LOCATION_TEXT_TEMPLATE
     from src.lightning_modules.qwen3_vl_module import Qwen3VLModule
 
     metadata_file = require_env("BIGEARTHNET_TXT_PARQUET_PATH")
@@ -384,9 +385,7 @@ def main_single(args: argparse.Namespace) -> dict[str, Any]:
         num_validation_generation_batches=0,
         loc_mode=args.condition,
         location_text_template=(
-            "Capture location: latitude {lat:.4f}, longitude {lon:.4f}."
-            if args.condition == "loc_text"
-            else None
+            DEFAULT_LOCATION_TEXT_TEMPLATE if args.condition == "loc_text" else None
         ),
         non_rgb_conditioning="enabled",
         non_rgb_encoder_dir=encoder_dir,
