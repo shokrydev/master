@@ -98,7 +98,8 @@ class Qwen3VLModule(L.LightningModule):
             system_prompt: Optional system message injected during chat formatting.
             loc_mode: Location conditioning mode ("no_loc", "loc_text", "loc_embed")
             location_text_template: Format string appended to the user prompt when
-                `loc_mode="loc_text"`. Receives `lat` and `lon`.
+                `loc_mode="loc_text"`. Coordinate formatting is handled by the
+                shared collator.
             non_rgb_conditioning: Whether non-RGB imagery conditions Qwen.
                 "disabled" strips non-RGB imagery before Qwen; "enabled" activates
                 the non-RGB encoder/projection path.
@@ -126,6 +127,10 @@ class Qwen3VLModule(L.LightningModule):
             raise ValueError("loc_mode='loc_text' requires location_text_template")
         if loc_mode != "loc_text" and location_text_template is not None:
             raise ValueError("location_text_template is only used when loc_mode='loc_text'")
+        if num_validation_generation_batches < 0:
+            raise ValueError("num_validation_generation_batches must be non-negative")
+        if not 0.0 <= warmup_ratio < 1.0:
+            raise ValueError("warmup_ratio must be in the interval [0, 1)")
         if non_rgb_feature_mode not in {"spatial_4x4", "pooled_prelogit"}:
             raise ValueError(f"Unsupported non_rgb_feature_mode: {non_rgb_feature_mode}")
         if non_rgb_spatial_pool_size <= 0:
@@ -269,7 +274,6 @@ class Qwen3VLModule(L.LightningModule):
         base_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
         self._collator = GeoAwareCollator(
             base_collator,
-            include_coordinates=self.loc_mode in {"loc_text", "loc_embed"},
             system_prompt=self.system_prompt,
             location_text_template=(
                 self.location_text_template if self.loc_mode == "loc_text" else None

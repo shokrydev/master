@@ -20,6 +20,8 @@ class SaveQLoRAAdaptersCallback(Callback):
         self.best_dirpath = Path(best_dirpath) if best_dirpath is not None else None
         self.monitor = monitor
         self.mode = mode
+        if self.mode not in {"min", "max"}:
+            raise ValueError("mode must be 'min' or 'max'")
         self.best_score: float | None = None
 
     def _is_better(self, current: float) -> bool:
@@ -27,9 +29,7 @@ class SaveQLoRAAdaptersCallback(Callback):
             return True
         if self.mode == "min":
             return current < self.best_score
-        if self.mode == "max":
-            return current > self.best_score
-        raise ValueError(f"Unsupported mode: {self.mode}")
+        return current > self.best_score
 
     def _save_adapters(self, pl_module: L.LightningModule, dirpath: Path) -> None:
         dirpath.mkdir(parents=True, exist_ok=True)

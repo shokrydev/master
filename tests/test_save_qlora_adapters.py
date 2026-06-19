@@ -51,7 +51,7 @@ class _FakeTokenizer:
 class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
     def test_validation_save_writes_adapter_artifacts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            callback = SaveQLoRAAdaptersCallback(dirpath=tmpdir)
+            callback = SaveQLoRAAdaptersCallback(dirpath="unused", best_dirpath=tmpdir)
             trainer = types.SimpleNamespace(
                 callback_metrics={"val/loss": torch.tensor(0.5)},
                 sanity_checking=False,

@@ -194,6 +194,9 @@ def collate_normalized(batch):
     latitudes = []
     longitudes = []
     non_rgb_bands = []
+    has_non_rgb_imagery = ["non_rgb_imagery" in item for item in batch]
+    if any(has_non_rgb_imagery) and not all(has_non_rgb_imagery):
+        raise ValueError("Either every sample or no sample must include 'non_rgb_imagery'")
     optional_metadata = {
         "sample_id": [],
         "patch_id": [],
@@ -203,7 +206,7 @@ def collate_normalized(batch):
 
     for item in batch:
         images.append(item["image"])
-        if "non_rgb_imagery" in item:
+        if has_non_rgb_imagery[0]:
             non_rgb_images.append(item["non_rgb_imagery"])
             non_rgb_bands.append(item.get("non_rgb_bands"))
         input_texts.append(item["input_text"])
@@ -286,6 +289,7 @@ class BENImageReader:
         self.env = None
 
         log_info = _resolve_info_fn(info_fn)
+        self._info = log_info
         log_info(f"Using bandorder {self.bands}")
         self.uses_s1 = any(x in _s1_bandnames for x in self.bands)
         self.uses_s2 = any(x in _s2_bandnames for x in self.bands)
@@ -323,7 +327,7 @@ class BENImageReader:
 
     def open_env(self):
         if self.env is None:
-            print("Opening LMDB environment ...")
+            self._info("Opening LMDB environment ...")
             self.env = lmdb.open(
                 str(self.image_lmdb_file),
                 readonly=True,
@@ -339,19 +343,26 @@ class BENImageReader:
         self.open_env()
         img_data_dict: dict = {}
         if self.uses_s2:
-            assert self.env is not None, "Environment not opened yet"
+            if self.env is None:
+                raise RuntimeError("LMDB environment was not opened")
             # read image data for S2v2
             with self.env.begin(write=False, buffers=True) as txn:
                 byte_data = txn.get(key.encode())
+            if byte_data is None:
+                raise KeyError(f"BigEarthNet LMDB is missing S2 patch key: {key}")
             img_data_dict.update(safetensor_load(bytes(byte_data)))
 
         if self.uses_s1:
             # read image data for S1
-            assert self.mapping is not None, "S1 bands are used, but no mapping is provided"
+            if self.mapping is None:
+                raise RuntimeError("S1 bands are used, but no S1/S2 mapping is available")
             s1_key = self.mapping[key]
-            assert self.env is not None, "Environment not opened yet"
+            if self.env is None:
+                raise RuntimeError("LMDB environment was not opened")
             with self.env.begin(write=False, buffers=True) as txn:
                 byte_data = txn.get(s1_key.encode())
+            if byte_data is None:
+                raise KeyError(f"BigEarthNet LMDB is missing S1 patch key: {s1_key}")
             img_data_dict.update(safetensor_load(bytes(byte_data)))
 
         img_data_dict = {k: v for k, v in img_data_dict.items() if k in self.bands}
@@ -505,9 +516,11 @@ class BENTxTDataset(Dataset):
 
         self.transform = transform
         self.point_token = ["", ""] if point_token is None else point_token
-        assert len(self.point_token) == 2, "Point tokens must have length 2."
+        if len(self.point_token) != 2:
+            raise ValueError("point_token must contain exactly two strings")
         self.ref_token = ["", ""] if ref_token is None else ref_token
-        assert len(self.ref_token) == 2, "Reference tokens must have length 2."
+        if len(self.ref_token) != 2:
+            raise ValueError("ref_token must contain exactly two strings")
 
     def __len__(self):
         """Return the number of samples in the dataset."""
