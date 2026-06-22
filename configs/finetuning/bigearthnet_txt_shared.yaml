@@ -89,6 +89,7 @@ model:
     non_rgb_feature_mode: spatial_4x4
     non_rgb_spatial_pool_size: 4
     num_non_rgb_tokens: 16
+    non_rgb_projection_lr_multiplier: 5.0
 
 data:
   class_path: src.data_modules.BENTxTDataModule

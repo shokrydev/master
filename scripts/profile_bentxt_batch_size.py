@@ -347,7 +347,10 @@ def main_single(args: argparse.Namespace) -> dict[str, Any]:
     torch.manual_seed(args.seed)
 
     from src.data_modules.ben_txt_datamodule import BENTxTDataset
-    from src.data_modules.geo_aware_collator import DEFAULT_LOCATION_TEXT_TEMPLATE
+    from src.data_modules.geo_aware_collator import (
+        DEFAULT_LOCATION_EMBED_MARKER,
+        DEFAULT_LOCATION_TEXT_TEMPLATE,
+    )
     from src.lightning_modules.qwen3_vl_module import Qwen3VLModule
 
     metadata_file = require_env("BIGEARTHNET_TXT_PARQUET_PATH")
@@ -387,14 +390,19 @@ def main_single(args: argparse.Namespace) -> dict[str, Any]:
         location_text_template=(
             DEFAULT_LOCATION_TEXT_TEMPLATE if args.condition == "loc_text" else None
         ),
+        location_embed_marker=(
+            DEFAULT_LOCATION_EMBED_MARKER if args.condition == "loc_embed" else None
+        ),
         non_rgb_conditioning="enabled",
         non_rgb_encoder_dir=encoder_dir,
         non_rgb_feature_mode="spatial_4x4",
         non_rgb_spatial_pool_size=4,
         num_non_rgb_tokens=16,
+        non_rgb_projection_lr_multiplier=5.0,
         satclip_checkpoint=satclip_checkpoint,
         satclip_dim=256,
-        num_location_tokens=1,
+        num_location_tokens=8 if args.condition == "loc_embed" else 1,
+        location_projection_lr_multiplier=5.0 if args.condition == "loc_embed" else 1.0,
     )
 
     module.setup("fit")
