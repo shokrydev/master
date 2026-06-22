@@ -2,6 +2,7 @@
 # Docs: https://lightning.ai/docs/pytorch/stable/common/lightning_module.html
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Literal
 
@@ -9,7 +10,7 @@ import bitsandbytes as bnb
 import lightning as L
 import torch
 from safetensors.torch import load_file
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import LambdaLR
 from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
 
@@ -58,15 +59,18 @@ class Qwen3VLModule(L.LightningModule):
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
         loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
         location_text_template: str | None = None,
+        location_embed_marker: str | None = None,
         non_rgb_conditioning: Literal["disabled", "enabled"] = "disabled",
         non_rgb_encoder_dir: str | None = None,
         non_rgb_encoder_feature_dim: int | None = None,
         non_rgb_feature_mode: Literal["spatial_4x4", "pooled_prelogit"] = "spatial_4x4",
         non_rgb_spatial_pool_size: int = 4,
         num_non_rgb_tokens: int = 16,
+        non_rgb_projection_lr_multiplier: float = 1.0,
         satclip_checkpoint: str | None = None,
         satclip_dim: int = 256,
         num_location_tokens: int = 1,
+        location_projection_lr_multiplier: float = 1.0,
         test_predictions_path: str | None = None,
     ):
         """
@@ -100,6 +104,8 @@ class Qwen3VLModule(L.LightningModule):
             location_text_template: Format string appended to the user prompt when
                 `loc_mode="loc_text"`. Coordinate formatting is handled by the
                 shared collator.
+            location_embed_marker: Text marker appended to the prompt before
+                projected SatCLIP tokens when `loc_mode="loc_embed"`.
             non_rgb_conditioning: Whether non-RGB imagery conditions Qwen.
                 "disabled" strips non-RGB imagery before Qwen; "enabled" activates
                 the non-RGB encoder/projection path.
@@ -112,9 +118,13 @@ class Qwen3VLModule(L.LightningModule):
                 uses the pooled MobileViT embedding before the classifier.
             non_rgb_spatial_pool_size: Spatial grid size for "spatial_4x4" mode.
             num_non_rgb_tokens: Number of projected non-RGB imagery tokens to insert.
+            non_rgb_projection_lr_multiplier: Learning-rate multiplier for
+                the randomly initialized S1/S2-to-Qwen projection.
             satclip_checkpoint: Path to SatCLIP checkpoint (required for encoder mode)
             satclip_dim: SatCLIP embedding dimension
             num_location_tokens: Number of location tokens to insert before the visual block (encoder mode)
+            location_projection_lr_multiplier: Learning-rate multiplier for
+                the randomly initialized SatCLIP-to-Qwen projection.
             test_predictions_path: If set, save per-sample predictions to this JSON path during test
         """
         super().__init__()
@@ -127,6 +137,14 @@ class Qwen3VLModule(L.LightningModule):
             raise ValueError("loc_mode='loc_text' requires location_text_template")
         if loc_mode != "loc_text" and location_text_template is not None:
             raise ValueError("location_text_template is only used when loc_mode='loc_text'")
+        if loc_mode == "loc_embed" and not location_embed_marker:
+            raise ValueError("loc_mode='loc_embed' requires location_embed_marker")
+        if loc_mode != "loc_embed" and location_embed_marker is not None:
+            raise ValueError("location_embed_marker is only used when loc_mode='loc_embed'")
+        if location_projection_lr_multiplier <= 0:
+            raise ValueError("location_projection_lr_multiplier must be positive")
+        if non_rgb_projection_lr_multiplier <= 0:
+            raise ValueError("non_rgb_projection_lr_multiplier must be positive")
         if num_validation_generation_batches < 0:
             raise ValueError("num_validation_generation_batches must be non-negative")
         if not 0.0 <= warmup_ratio < 1.0:
@@ -167,15 +185,18 @@ class Qwen3VLModule(L.LightningModule):
         self.system_prompt = system_prompt
         self.loc_mode = loc_mode
         self.location_text_template = location_text_template
+        self.location_embed_marker = location_embed_marker
         self.non_rgb_conditioning = non_rgb_conditioning
         self.non_rgb_encoder_dir = str(non_rgb_encoder_dir) if non_rgb_encoder_dir else None
         self.non_rgb_encoder_feature_dim = non_rgb_encoder_feature_dim
         self.non_rgb_feature_mode = non_rgb_feature_mode
         self.non_rgb_spatial_pool_size = non_rgb_spatial_pool_size
         self.num_non_rgb_tokens = num_non_rgb_tokens
+        self.non_rgb_projection_lr_multiplier = non_rgb_projection_lr_multiplier
         self.satclip_checkpoint = satclip_checkpoint
         self.satclip_dim = satclip_dim
         self.num_location_tokens = num_location_tokens
+        self.location_projection_lr_multiplier = location_projection_lr_multiplier
         self.test_predictions_path = test_predictions_path
 
         self.model = None
@@ -272,12 +293,16 @@ class Qwen3VLModule(L.LightningModule):
 
         # Wrap collator with GeoAwareCollator
         base_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
+        location_prompt_template = None
+        if self.loc_mode == "loc_text":
+            location_prompt_template = self.location_text_template
+        elif self.loc_mode == "loc_embed":
+            location_prompt_template = self.location_embed_marker
+
         self._collator = GeoAwareCollator(
             base_collator,
             system_prompt=self.system_prompt,
-            location_text_template=(
-                self.location_text_template if self.loc_mode == "loc_text" else None
-            ),
+            location_text_template=location_prompt_template,
         )
         self._set_datamodule_collator()
 
@@ -316,8 +341,20 @@ class Qwen3VLModule(L.LightningModule):
         )
         if self.location_modality_projection is not None:
             self._print(f"LocationModalityProjection params: {location_proj_params:,}")
+            if self.location_projection_lr_multiplier != 1.0:
+                location_lr = self.learning_rate * self.location_projection_lr_multiplier
+                self._print(
+                    "LocationModalityProjection LR: "
+                    f"{location_lr:g} ({self.location_projection_lr_multiplier:g}x)"
+                )
         if self.non_rgb_modality_projection is not None:
             self._print(f"NonRGBModalityProjection params: {non_rgb_proj_params:,}")
+            if self.non_rgb_projection_lr_multiplier != 1.0:
+                non_rgb_lr = self.learning_rate * self.non_rgb_projection_lr_multiplier
+                self._print(
+                    "NonRGBModalityProjection LR: "
+                    f"{non_rgb_lr:g} ({self.non_rgb_projection_lr_multiplier:g}x)"
+                )
 
     def _get_text_hidden_size(self) -> int:
         """Return the Qwen text hidden size behind the PEFT wrapper."""
@@ -528,15 +565,6 @@ class Qwen3VLModule(L.LightningModule):
         projected_tokens = []
         insert_positions = None
 
-        if non_rgb_state is not None:
-            insert_positions = non_rgb_state["insert_positions"]
-            imagery = non_rgb_state["tensor"].to(self.device)
-            bands = non_rgb_state["bands"]
-            with torch.no_grad():
-                non_rgb_features = self.non_rgb_encoder(imagery, bands).float()
-            non_rgb_tokens = self.non_rgb_modality_projection(non_rgb_features)
-            projected_tokens.append(non_rgb_tokens)
-
         if location_state is not None:
             insert_positions = location_state["insert_positions"]
             lat = location_state["lat"]
@@ -549,6 +577,15 @@ class Qwen3VLModule(L.LightningModule):
 
             loc_tokens = self.location_modality_projection(loc_embed)
             projected_tokens.append(loc_tokens)
+
+        if non_rgb_state is not None:
+            insert_positions = non_rgb_state["insert_positions"]
+            imagery = non_rgb_state["tensor"].to(self.device)
+            bands = non_rgb_state["bands"]
+            with torch.no_grad():
+                non_rgb_features = self.non_rgb_encoder(imagery, bands).float()
+            non_rgb_tokens = self.non_rgb_modality_projection(non_rgb_features)
+            projected_tokens.append(non_rgb_tokens)
 
         if not projected_tokens:
             return args, kwargs
@@ -830,35 +867,111 @@ class Qwen3VLModule(L.LightningModule):
 
     def configure_optimizers(self):
         """Configure optimizer and learning rate scheduler."""
-        decay_params = []
-        no_decay_params = []
+        decay_params: list[torch.nn.Parameter] = []
+        no_decay_params: list[torch.nn.Parameter] = []
+        location_decay_params: list[torch.nn.Parameter] = []
+        location_no_decay_params: list[torch.nn.Parameter] = []
+        non_rgb_decay_params: list[torch.nn.Parameter] = []
+        non_rgb_no_decay_params: list[torch.nn.Parameter] = []
 
-        # Collect params from model + projection modules (if present)
-        all_named_params = list(self.model.named_parameters())
-        if self.location_modality_projection is not None:
-            all_named_params.extend(
-                (f"location_modality_projection.{n}", p)
-                for n, p in self.location_modality_projection.named_parameters()
-            )
-        if self.non_rgb_modality_projection is not None:
-            all_named_params.extend(
-                (f"non_rgb_modality_projection.{n}", p)
-                for n, p in self.non_rgb_modality_projection.named_parameters()
-            )
-
-        for name, param in all_named_params:
+        def add_param(
+            name: str,
+            param: torch.nn.Parameter,
+            *,
+            location_projection: bool = False,
+            non_rgb_projection: bool = False,
+        ) -> None:
             if not param.requires_grad:
-                continue
+                return
             if "bias" in name or "LayerNorm" in name or "layer_norm" in name:
-                no_decay_params.append(param)
+                if location_projection:
+                    target = location_no_decay_params
+                elif non_rgb_projection:
+                    target = non_rgb_no_decay_params
+                else:
+                    target = no_decay_params
             else:
-                decay_params.append(param)
+                if location_projection:
+                    target = location_decay_params
+                elif non_rgb_projection:
+                    target = non_rgb_decay_params
+                else:
+                    target = decay_params
+            target.append(param)
+
+        for name, param in self.model.named_parameters():
+            add_param(name, param)
+        if self.location_modality_projection is not None:
+            for name, param in self.location_modality_projection.named_parameters():
+                add_param(
+                    f"location_modality_projection.{name}",
+                    param,
+                    location_projection=True,
+                )
+        if self.non_rgb_modality_projection is not None:
+            for name, param in self.non_rgb_modality_projection.named_parameters():
+                add_param(
+                    f"non_rgb_modality_projection.{name}",
+                    param,
+                    non_rgb_projection=True,
+                )
+
+        optimizer_groups = []
+        if decay_params:
+            optimizer_groups.append(
+                {
+                    "params": decay_params,
+                    "weight_decay": self.weight_decay,
+                    "lr": self.learning_rate,
+                }
+            )
+        if no_decay_params:
+            optimizer_groups.append(
+                {
+                    "params": no_decay_params,
+                    "weight_decay": 0.0,
+                    "lr": self.learning_rate,
+                }
+            )
+
+        location_lr = self.learning_rate * self.location_projection_lr_multiplier
+        if location_decay_params:
+            optimizer_groups.append(
+                {
+                    "params": location_decay_params,
+                    "weight_decay": self.weight_decay,
+                    "lr": location_lr,
+                }
+            )
+        if location_no_decay_params:
+            optimizer_groups.append(
+                {
+                    "params": location_no_decay_params,
+                    "weight_decay": 0.0,
+                    "lr": location_lr,
+                }
+            )
+
+        non_rgb_lr = self.learning_rate * self.non_rgb_projection_lr_multiplier
+        if non_rgb_decay_params:
+            optimizer_groups.append(
+                {
+                    "params": non_rgb_decay_params,
+                    "weight_decay": self.weight_decay,
+                    "lr": non_rgb_lr,
+                }
+            )
+        if non_rgb_no_decay_params:
+            optimizer_groups.append(
+                {
+                    "params": non_rgb_no_decay_params,
+                    "weight_decay": 0.0,
+                    "lr": non_rgb_lr,
+                }
+            )
 
         optimizer = bnb.optim.AdamW8bit(
-            [
-                {"params": decay_params, "weight_decay": self.weight_decay},
-                {"params": no_decay_params, "weight_decay": 0.0},
-            ],
+            optimizer_groups,
             lr=self.learning_rate,
         )
 
@@ -878,15 +991,17 @@ class Qwen3VLModule(L.LightningModule):
             )
 
         warmup_steps = int(total_steps * self.warmup_ratio)
+        decay_steps = max(1, total_steps - warmup_steps)
+        min_lr_factor = 0.1
 
-        scheduler = SequentialLR(
-            optimizer,
-            schedulers=[
-                LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps),
-                CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps, eta_min=self.learning_rate * 0.1),
-            ],
-            milestones=[warmup_steps],
-        )
+        def lr_factor(step: int) -> float:
+            if warmup_steps > 0 and step < warmup_steps:
+                return min_lr_factor + (1.0 - min_lr_factor) * step / warmup_steps
+            progress = min(1.0, max(0.0, (step - warmup_steps) / decay_steps))
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return min_lr_factor + (1.0 - min_lr_factor) * cosine
+
+        scheduler = LambdaLR(optimizer, lr_lambda=lr_factor)
 
         return {
             "optimizer": optimizer,

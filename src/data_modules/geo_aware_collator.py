@@ -4,7 +4,8 @@ from typing import Any
 import torch
 
 
-DEFAULT_LOCATION_TEXT_TEMPLATE = "Location: {location}."
+DEFAULT_LOCATION_TEXT_TEMPLATE = "Scene coordinates: {location}."
+DEFAULT_LOCATION_EMBED_MARKER = "Scene coordinates:"
 
 
 def _location_template_fields(lat: float, lon: float) -> dict[str, Any]:

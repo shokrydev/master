@@ -268,7 +268,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
         self.assertEqual(encoder.bands, ["VV", "VH"])
         self.assertEqual(projection.features.shape, (2, 2, 5))
 
-    def test_projected_token_hook_orders_non_rgb_before_location(self):
+    def test_projected_token_hook_orders_location_before_non_rgb(self):
         module = object.__new__(Qwen3VLModule)
         module.device = torch.device("cpu")
         module._non_rgb_insertion_state = {
@@ -290,7 +290,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
 
         module._projected_token_insertion_hook(None, (), kwargs)
 
-        expected = torch.tensor([[[1.0], [80.0], [90.0], [2.0]]])
+        expected = torch.tensor([[[1.0], [90.0], [80.0], [2.0]]])
         self.assertTrue(torch.equal(kwargs["inputs_embeds"], expected))
 
 
@@ -477,6 +477,22 @@ class AdapterArtifactSetupTest(unittest.TestCase):
     def test_location_text_template_requires_loc_text_mode(self):
         with self.assertRaisesRegex(ValueError, "loc_mode='loc_text'"):
             Qwen3VLModule(location_text_template="lat {lat}")
+
+    def test_loc_embed_requires_location_embed_marker(self):
+        with self.assertRaisesRegex(ValueError, "location_embed_marker"):
+            Qwen3VLModule(loc_mode="loc_embed")
+
+    def test_location_embed_marker_requires_loc_embed_mode(self):
+        with self.assertRaisesRegex(ValueError, "loc_mode='loc_embed'"):
+            Qwen3VLModule(location_embed_marker="Scene coordinates:")
+
+    def test_location_projection_lr_multiplier_must_be_positive(self):
+        with self.assertRaisesRegex(ValueError, "location_projection_lr_multiplier"):
+            Qwen3VLModule(location_projection_lr_multiplier=0.0)
+
+    def test_non_rgb_projection_lr_multiplier_must_be_positive(self):
+        with self.assertRaisesRegex(ValueError, "non_rgb_projection_lr_multiplier"):
+            Qwen3VLModule(non_rgb_projection_lr_multiplier=0.0)
 
     def test_invalid_non_rgb_feature_mode_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unsupported non_rgb_feature_mode"):
