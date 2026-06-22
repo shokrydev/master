@@ -7,6 +7,7 @@ from pathlib import Path
 
 import unsloth  # Must be imported before transformers for Unsloth optimizations
 import lightning as L
+import torch
 from lightning.pytorch.cli import LightningArgumentParser, LightningCLI
 
 # Import concrete classes so Lightning CLI can discover them via class_path.
@@ -131,6 +132,7 @@ class FinetuningCLI(LightningCLI):
 def cli_main() -> None:
     """Run the CLI."""
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    torch.set_float32_matmul_precision("high")
     cli = FinetuningCLI(
         model_class=L.LightningModule,
         datamodule_class=L.LightningDataModule,
