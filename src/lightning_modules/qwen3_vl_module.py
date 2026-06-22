@@ -916,59 +916,47 @@ class Qwen3VLModule(L.LightningModule):
                     non_rgb_projection=True,
                 )
 
-        optimizer_groups = []
-        if decay_params:
-            optimizer_groups.append(
-                {
-                    "params": decay_params,
-                    "weight_decay": self.weight_decay,
-                    "lr": self.learning_rate,
-                }
-            )
-        if no_decay_params:
-            optimizer_groups.append(
-                {
-                    "params": no_decay_params,
-                    "weight_decay": 0.0,
-                    "lr": self.learning_rate,
-                }
-            )
-
         location_lr = self.learning_rate * self.location_projection_lr_multiplier
-        if location_decay_params:
-            optimizer_groups.append(
-                {
-                    "params": location_decay_params,
-                    "weight_decay": self.weight_decay,
-                    "lr": location_lr,
-                }
-            )
-        if location_no_decay_params:
-            optimizer_groups.append(
-                {
-                    "params": location_no_decay_params,
-                    "weight_decay": 0.0,
-                    "lr": location_lr,
-                }
-            )
-
         non_rgb_lr = self.learning_rate * self.non_rgb_projection_lr_multiplier
-        if non_rgb_decay_params:
-            optimizer_groups.append(
-                {
-                    "params": non_rgb_decay_params,
-                    "weight_decay": self.weight_decay,
-                    "lr": non_rgb_lr,
-                }
-            )
-        if non_rgb_no_decay_params:
-            optimizer_groups.append(
-                {
-                    "params": non_rgb_no_decay_params,
-                    "weight_decay": 0.0,
-                    "lr": non_rgb_lr,
-                }
-            )
+        optimizer_groups = [
+            {
+                "name": "base_decay",
+                "params": decay_params,
+                "weight_decay": self.weight_decay,
+                "lr": self.learning_rate,
+            },
+            {
+                "name": "base_no_decay",
+                "params": no_decay_params,
+                "weight_decay": 0.0,
+                "lr": self.learning_rate,
+            },
+            {
+                "name": "location_projection_decay",
+                "params": location_decay_params,
+                "weight_decay": self.weight_decay,
+                "lr": location_lr,
+            },
+            {
+                "name": "location_projection_no_decay",
+                "params": location_no_decay_params,
+                "weight_decay": 0.0,
+                "lr": location_lr,
+            },
+            {
+                "name": "non_rgb_projection_decay",
+                "params": non_rgb_decay_params,
+                "weight_decay": self.weight_decay,
+                "lr": non_rgb_lr,
+            },
+            {
+                "name": "non_rgb_projection_no_decay",
+                "params": non_rgb_no_decay_params,
+                "weight_decay": 0.0,
+                "lr": non_rgb_lr,
+            },
+        ]
+        optimizer_groups = [group for group in optimizer_groups if group["params"]]
 
         optimizer = bnb.optim.AdamW8bit(
             optimizer_groups,
