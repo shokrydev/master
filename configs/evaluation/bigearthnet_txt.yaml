@@ -1,6 +1,6 @@
 # BigEarthNet.txt evaluation config.
 #
-# BigEarthNet is the primary path for multispectral/SAR experiments. Evaluation
+# BigEarthNet.txt is the core multispectral/SAR evaluation dataset. Evaluation
 # therefore defaults to enabled S1/S2 conditioning; RGB-only evaluation should
 # be an explicit ablation override.
 
@@ -35,5 +35,6 @@ data:
     rgb_quantile: 0.90
     use_location_redacted_captions: false
     location_redacted_caption_file: null
+    test_splits: [bench]
     batch_size: 1
     num_workers_dataloader: 4

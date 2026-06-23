@@ -624,10 +624,12 @@ class Qwen3VLModule(L.LightningModule):
         lon = batch.pop("lon", None)
         target_texts = batch.pop("target_texts", None)
         sample_metadata = {
+            "input_text": batch.pop("input_text", None),
             "sample_id": batch.pop("sample_id", None),
             "patch_id": batch.pop("patch_id", None),
             "task_type": batch.pop("task_type", None),
             "task_category": batch.pop("task_category", None),
+            "split": batch.pop("split", None),
         }
         non_rgb_imagery = {
             "tensor": batch.pop("non_rgb_imagery", None),
@@ -835,6 +837,9 @@ class Qwen3VLModule(L.LightningModule):
                     entry = {
                         "prediction": pred,
                         "target_texts": target_texts[i] if target_texts else [],
+                        "location_condition": self.loc_mode,
+                        "model_name_or_path": self.model_name_or_path,
+                        "adapter_dir": self.adapter_dir,
                     }
                     for key, values in sample_metadata.items():
                         if values is not None:

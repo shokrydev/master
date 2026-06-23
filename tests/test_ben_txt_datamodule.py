@@ -6,6 +6,8 @@ import torch
 from PIL import Image
 
 from src.data_modules.ben_txt_datamodule import (
+    BENTxTDataModule,
+    _fixed_random_subset,
     _load_location_redacted_captions,
     _sentinel2_rgb_tensor_to_pil,
     collate_normalized,
@@ -13,6 +15,33 @@ from src.data_modules.ben_txt_datamodule import (
 
 
 class TestBENTxTDataBoundary(unittest.TestCase):
+    def test_fixed_validation_subset_is_seeded_and_not_a_leading_slice(self) -> None:
+        dataset = list(range(100))
+
+        first = _fixed_random_subset(dataset, size=12, seed=42)
+        second = _fixed_random_subset(dataset, size=12, seed=42)
+
+        self.assertEqual(first.indices, second.indices)
+        self.assertEqual(len(first), 12)
+        self.assertNotEqual(first.indices, list(range(12)))
+
+    def test_datamodule_uses_explicit_test_splits(self) -> None:
+        datamodule = BENTxTDataModule(
+            image_lmdb_file="images.lmdb",
+            metadata_file="metadata.parquet",
+            test_splits=("bench",),
+        )
+
+        self.assertEqual(datamodule.test_splits, ("bench",))
+
+    def test_datamodule_rejects_unknown_test_split(self) -> None:
+        with self.assertRaisesRegex(ValueError, "test_splits"):
+            BENTxTDataModule(
+                image_lmdb_file="images.lmdb",
+                metadata_file="metadata.parquet",
+                test_splits=("unknown",),
+            )
+
     def test_location_redacted_caption_file_loads_patch_mapping(self) -> None:
         with TemporaryDirectory() as tmpdir:
             path = f"{tmpdir}/captions.parquet"
@@ -78,6 +107,7 @@ class TestBENTxTDataBoundary(unittest.TestCase):
                     "patch_id": "patch-1",
                     "task_type": "captioning",
                     "task_category": "caption",
+                    "split": "validation",
                     "lat": 10.5,
                     "lon": 20.5,
                 },
@@ -89,6 +119,7 @@ class TestBENTxTDataBoundary(unittest.TestCase):
                     "patch_id": "patch-2",
                     "task_type": "binary",
                     "task_category": "presence",
+                    "split": "validation",
                     "lat": -1.0,
                     "lon": 42.0,
                 },
@@ -102,6 +133,7 @@ class TestBENTxTDataBoundary(unittest.TestCase):
         self.assertEqual(batch["patch_id"], ["patch-1", "patch-2"])
         self.assertEqual(batch["task_type"], ["captioning", "binary"])
         self.assertEqual(batch["task_category"], ["caption", "presence"])
+        self.assertEqual(batch["split"], ["validation", "validation"])
         self.assertTrue(
             torch.equal(batch["lat"], torch.tensor([10.5, -1.0], dtype=torch.float64))
         )

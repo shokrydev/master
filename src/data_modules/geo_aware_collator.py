@@ -3,7 +3,6 @@ from typing import Any
 
 import torch
 
-
 DEFAULT_LOCATION_TEXT_TEMPLATE = "Scene coordinates: {location}."
 DEFAULT_LOCATION_EMBED_MARKER = "Scene coordinates:"
 
@@ -42,6 +41,7 @@ class GeoAwareCollator:
       - patch_id (optional)
       - task_type (optional)
       - task_category (optional)
+      - split (optional)
       - non_rgb_imagery (optional)
       - non_rgb_bands (optional)
 
@@ -93,6 +93,7 @@ class GeoAwareCollator:
             "patch_id": [],
             "task_type": [],
             "task_category": [],
+            "split": [],
         }
         non_rgb_images = []
         non_rgb_bands = []
@@ -101,6 +102,7 @@ class GeoAwareCollator:
             raise ValueError("Either every sample or no sample must include 'non_rgb_imagery'")
 
         cleaned = []
+        input_texts = []
         for item in items:
             image = item["image"]
             input_text = str(item["input_text"])
@@ -127,6 +129,7 @@ class GeoAwareCollator:
                 if key in item:
                     values.append(item[key])
             input_text = self._with_location_text(input_text, lat, lon)
+            input_texts.append(input_text)
             if has_non_rgb_imagery[0]:
                 non_rgb_image = item["non_rgb_imagery"]
                 if not isinstance(non_rgb_image, torch.Tensor):
@@ -148,6 +151,7 @@ class GeoAwareCollator:
 
         # Keep full targets for multi-reference evaluation.
         batch["target_texts"] = target_texts_batch
+        batch["input_text"] = input_texts
         for key, values in optional_metadata.items():
             if values:
                 if len(values) != len(items):

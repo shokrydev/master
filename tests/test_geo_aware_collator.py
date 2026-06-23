@@ -27,6 +27,7 @@ class TestGeoAwareCollator(unittest.TestCase):
                 "image": object(),
                 "input_text": "Describe this remote sensing image.",
                 "target_texts": ["caption a", "caption b"],
+                "split": "bench",
                 "lat": 10.5,
                 "lon": 20.5,
             }
@@ -45,6 +46,8 @@ class TestGeoAwareCollator(unittest.TestCase):
         self.assertIn("lon", batch)
         self.assertIn("target_texts", batch)
         self.assertEqual(batch["target_texts"], [["caption a", "caption b"]])
+        self.assertEqual(batch["input_text"], ["Describe this remote sensing image."])
+        self.assertEqual(batch["split"], ["bench"])
         self.assertTrue(torch.equal(batch["lat"], torch.tensor([10.5], dtype=torch.float64)))
         self.assertTrue(torch.equal(batch["lon"], torch.tensor([20.5], dtype=torch.float64)))
 

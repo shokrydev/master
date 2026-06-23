@@ -15,7 +15,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 from safetensors.numpy import load as safetensor_load
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 try:
     import lightning.pytorch as pl
@@ -202,6 +202,7 @@ def collate_normalized(batch):
         "patch_id": [],
         "task_type": [],
         "task_category": [],
+        "split": [],
     }
 
     for item in batch:
@@ -238,6 +239,14 @@ def collate_normalized(batch):
             collated["non_rgb_bands"] = non_rgb_bands
 
     return collated
+
+
+def _fixed_random_subset(dataset: Dataset, size: int, seed: int) -> Subset:
+    """Select a reproducible random subset instead of taking leading rows."""
+    subset_size = min(size, len(dataset))
+    generator = torch.Generator().manual_seed(seed)
+    indices = torch.randperm(len(dataset), generator=generator)[:subset_size]
+    return Subset(dataset, indices.tolist())
 
 
 def _sentinel2_rgb_tensor_to_pil(
@@ -544,6 +553,7 @@ class BENTxTDataset(Dataset):
                 - 'patch_id': BigEarthNet patch id.
                 - 'task_type': BigEarthNet.txt task type.
                 - 'task_category': BigEarthNet.txt task category.
+                - 'split': BigEarthNet.txt split.
                 - 'lat': Latitude of the patch center.
                 - 'lon': Longitude of the patch center.
         """
@@ -592,6 +602,7 @@ class BENTxTDataset(Dataset):
             "patch_id": str(sample.patch_id),
             "task_type": str(sample.type),
             "task_category": str(sample.category),
+            "split": str(sample.split),
             "lat": lat,
             "lon": lon,
         }
@@ -603,7 +614,7 @@ class BENTxTDataModule(pl.LightningDataModule):
 
     This DataModule provides a structured interface for loading BigEarthNet.txt
     for the shared VLM training/evaluation path. It automatically handles train,
-    validation, test, and benchmark dataset splits and emits the repo sample schema.
+    validation and explicitly selected evaluation splits and emits the repo sample schema.
 
     The module manages:
     - Automatic dataset setup for different training stages
@@ -616,13 +627,7 @@ class BENTxTDataModule(pl.LightningDataModule):
         train_ds (BENTxTDataset): Training dataset instance.
         val_ds (BENTxTDataset): Validation dataset instance.
         test_ds (BENTxTDataset): Test dataset instance.
-        bench_ds (BENTxTDataset): Benchmark dataset instance.
     """
-    train_ds = None
-    val_ds = None
-    test_ds = None
-    bench_ds = None
-
     def __init__(
             self,
             image_lmdb_file: str | Path,
@@ -641,16 +646,19 @@ class BENTxTDataModule(pl.LightningDataModule):
             batch_size: int | None = 16,
             image_transforms_train: Callable | None = None,
             image_transforms_eval: Callable | None = None,
-            point_token: Iterable[str] = None,
-            ref_token: Iterable[str] = None,
+            point_token: Iterable[str] | None = None,
+            ref_token: Iterable[str] | None = None,
             use_location_redacted_captions: bool = False,
             location_redacted_caption_file: str | Path | None = None,
+            validation_subset_size: int | None = None,
+            validation_subset_seed: int = 42,
+            test_splits: Iterable[str] = ("test",),
     ):
         """
         Initialize the BigEarthNet.txt DataModule.
 
         Args:
-            lmdb_file: Path to the LMDB file containing the BigEarthNet-v2.0 image data.
+            image_lmdb_file: Path to the LMDB environment containing BigEarthNet-v2.0 imagery.
             metadata_file: Path to the BigEarthNet.txt Parquet file.
             bands: Sentinel-1/Sentinel-2 band names to normalize and expose. Can be a
                 predefined combination key ('RGB', 'S2-10m20m', 'S1S2-10m20m',
@@ -682,12 +690,39 @@ class BENTxTDataModule(pl.LightningDataModule):
             location_redacted_caption_file: Optional parquet with `patch_id`
                 and `refined_caption` columns. Required when
                 use_location_redacted_captions is true.
+            validation_subset_size: Optional fixed-size random subset used by
+                validation monitoring. The same seed selects the same rows.
+            validation_subset_seed: Seed for the fixed validation subset.
+            test_splits: Dataset split or splits exposed through Lightning's
+                test loop. Use `("bench",)` for official benchmark evaluation.
         """
         super().__init__()
+        if num_workers_dataloader is None or num_workers_dataloader < 0:
+            raise ValueError("num_workers_dataloader must be a non-negative integer")
+        if batch_size is None or batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer")
+        if validation_subset_size is not None and validation_subset_size <= 0:
+            raise ValueError("validation_subset_size must be positive when set")
+
+        test_splits = tuple(test_splits)
+        valid_splits = {"train", "validation", "test", "bench"}
+        invalid_test_splits = sorted(set(test_splits) - valid_splits)
+        if not test_splits or invalid_test_splits:
+            raise ValueError(
+                "test_splits must contain valid BigEarthNet.txt splits; "
+                f"invalid values: {invalid_test_splits}"
+            )
+
         self.num_workers_dataloader = num_workers_dataloader
         self.batch_size = batch_size
         self.pin_memory = torch.cuda.is_available()
+        self.validation_subset_size = validation_subset_size
+        self.validation_subset_seed = validation_subset_seed
+        self.test_splits = test_splits
         self._collator: Callable | None = None
+        self.train_ds: Dataset | None = None
+        self.val_ds: Dataset | None = None
+        self.test_ds: Dataset | None = None
 
         self.bands = _resolve_bands(bands)
         if rgb_render_mode not in ("copernicus", "quantile"):
@@ -736,16 +771,14 @@ class BENTxTDataModule(pl.LightningDataModule):
 
     def setup(self, stage: str | None = None) -> None:
         """
-        Create train/val/test/bench datasets based on the specified stage.
+        Create training, validation, or selected evaluation datasets.
 
         This method is called by PyTorch Lightning during trainer initialization.
 
         Args:
-            stage: The training stage - one of 'fit', 'test', 'bench', or None. If None,
-                all datasets are created. Default: None.
+            stage: The Lightning stage. If None, all datasets are created.
                 - 'fit': Creates train and validation datasets
-                - 'test': Creates test dataset (includes both 'test' and 'bench' splits)
-                - 'bench': Creates benchmark dataset
+                - 'test': Creates the dataset selected by ``test_splits``
         """
         if stage == "fit" or stage is None:
             self.train_ds = BENTxTDataset(
@@ -758,22 +791,28 @@ class BENTxTDataModule(pl.LightningDataModule):
                 splits=['validation'],
                 transform=self.eval_transforms
             )
+            if self.validation_subset_size is not None:
+                self.val_ds = _fixed_random_subset(
+                    self.val_ds,
+                    self.validation_subset_size,
+                    self.validation_subset_seed,
+                )
         if stage == "test" or stage is None:
             self.test_ds = BENTxTDataset(
                 **self.ds_kwargs,
-                splits=['test', 'bench'],
-                transform=self.eval_transforms
-            )
-        if stage == "bench" or stage is None:
-            self.bench_ds = BENTxTDataset(
-                **self.ds_kwargs,
-                splits=['bench'],
+                splits=self.test_splits,
                 transform=self.eval_transforms
             )
 
-
-
-    def _create_dataloader(self, dataset, *, shuffle: bool) -> DataLoader:
+    def _create_dataloader(
+        self,
+        dataset,
+        *,
+        shuffle: bool,
+        persistent_workers: bool = False,
+    ) -> DataLoader:
+        if dataset is None:
+            raise RuntimeError("Dataset is not initialized; call setup for this stage first")
         collate_fn = self._collator if self._collator is not None else collate_normalized
         return DataLoader(
             dataset,
@@ -781,6 +820,7 @@ class BENTxTDataModule(pl.LightningDataModule):
             num_workers=self.num_workers_dataloader,
             shuffle=shuffle,
             pin_memory=self.pin_memory,
+            persistent_workers=persistent_workers and self.num_workers_dataloader > 0,
             collate_fn=collate_fn,
         )
 
@@ -790,12 +830,12 @@ class BENTxTDataModule(pl.LightningDataModule):
 
     def val_dataloader(self):
         """Create and return the validation DataLoader without shuffling."""
-        return self._create_dataloader(self.val_ds, shuffle=False)
+        return self._create_dataloader(
+            self.val_ds,
+            shuffle=False,
+            persistent_workers=True,
+        )
 
     def test_dataloader(self):
-        """Create and return the test DataLoader (includes both 'test' and 'bench' splits)."""
+        """Create the DataLoader for the configured test split or splits."""
         return self._create_dataloader(self.test_ds, shuffle=False)
-
-    def bench_dataloader(self):
-        """Create and return the benchmark DataLoader."""
-        return self._create_dataloader(self.bench_ds, shuffle=False)
