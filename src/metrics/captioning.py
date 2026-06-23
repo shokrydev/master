@@ -5,10 +5,9 @@
 import torch
 from nltk.corpus import wordnet
 from nltk.translate.meteor_score import meteor_score
-from torchmetrics import Metric
 
 
-class CaptioningMetrics(Metric):
+class CaptioningMetrics(torch.nn.Module):
     """Corpus-level captioning metrics with multi-reference support.
 
     Computes BLEU (1-4), ROUGE-1, ROUGE-2, ROUGE-L, METEOR, and CIDEr.
@@ -21,15 +20,11 @@ class CaptioningMetrics(Metric):
         scores = metric.compute()  # {"bleu1": ..., "rouge_1": ..., "cider": ..., ...}
     """
 
-    is_differentiable = False
-    higher_is_better = True
-    full_state_update = False
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self) -> None:
+        super().__init__()
         self._ensure_meteor_resources()
-        self.add_state("predictions", default=[], dist_reduce_fx=None)
-        self.add_state("references", default=[], dist_reduce_fx=None)
+        self.predictions: list[str] = []
+        self.references: list[list[str]] = []
 
     def update(self, predictions: list[str], references: list[list[str]]) -> None:
         """Accumulate predictions and their multi-reference ground truths.
@@ -137,5 +132,5 @@ class CaptioningMetrics(Metric):
 
     def reset(self) -> None:
         """Clear accumulated predictions and references."""
-        self.predictions = []
-        self.references = []
+        self.predictions.clear()
+        self.references.clear()
