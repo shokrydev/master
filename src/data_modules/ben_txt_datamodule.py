@@ -804,13 +804,7 @@ class BENTxTDataModule(pl.LightningDataModule):
                 transform=self.eval_transforms
             )
 
-    def _create_dataloader(
-        self,
-        dataset,
-        *,
-        shuffle: bool,
-        persistent_workers: bool = False,
-    ) -> DataLoader:
+    def _create_dataloader(self, dataset, *, shuffle: bool) -> DataLoader:
         if dataset is None:
             raise RuntimeError("Dataset is not initialized; call setup for this stage first")
         collate_fn = self._collator if self._collator is not None else collate_normalized
@@ -820,7 +814,6 @@ class BENTxTDataModule(pl.LightningDataModule):
             num_workers=self.num_workers_dataloader,
             shuffle=shuffle,
             pin_memory=self.pin_memory,
-            persistent_workers=persistent_workers and self.num_workers_dataloader > 0,
             collate_fn=collate_fn,
         )
 
@@ -830,11 +823,7 @@ class BENTxTDataModule(pl.LightningDataModule):
 
     def val_dataloader(self):
         """Create and return the validation DataLoader without shuffling."""
-        return self._create_dataloader(
-            self.val_ds,
-            shuffle=False,
-            persistent_workers=True,
-        )
+        return self._create_dataloader(self.val_ds, shuffle=False)
 
     def test_dataloader(self):
         """Create the DataLoader for the configured test split or splits."""
