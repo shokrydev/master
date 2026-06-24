@@ -10,7 +10,6 @@ from pathlib import Path
 import pyarrow.parquet as pq
 from omegaconf import OmegaConf
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = REPO_ROOT / ".env"
 LIGHTNING_CONFIG_KEYS = {

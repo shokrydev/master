@@ -1,6 +1,6 @@
 # Shared BigEarthNet.txt finetuning config.
 #
-# BigEarthNet is the current primary path for geolocation experiments with
+# BigEarthNet.txt is the core dataset for the geolocation experiments with
 # multispectral/SAR imagery. The default condition is no explicit location with
 # enabled non-RGB conditioning; compose loc_text.yaml or loc_embed.yaml for
 # location-conditioned runs.

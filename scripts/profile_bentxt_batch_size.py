@@ -21,8 +21,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import unsloth  # noqa: F401  # Must be imported before transformers for Unsloth optimizations
 import torch
+import unsloth  # noqa: F401  # Must be imported before transformers for Unsloth optimizations
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = REPO_ROOT / ".env"

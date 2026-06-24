@@ -22,7 +22,7 @@ configs/finetuning/
   bigearthnet_txt_smoke.yaml    # short-run validation override
   loc_text.yaml                 # text-token location conditioning
   loc_embed.yaml                # SatCLIP-token location conditioning
-  gaia_finetuning_shared.yaml   # secondary GAIA path
+  gaia_finetuning_shared.yaml   # optional GAIA configuration
 
 scripts/
   download_artifacts.py         # Qwen, SatCLIP and BigEarthNet encoder artifacts
@@ -76,7 +76,7 @@ HF_HOME=${HOME}/.cache/huggingface/
 # Directory under which Slurm run directories are created.
 FINETUNING_OUTPUT_ROOT=/absolute/path/to/finetuning_outputs/
 # Stable Slurm partition default for this machine. Override per run when needed.
-SLURM_DEFAULT_PARTITION=small_job
+SLURM_DEFAULT_PARTITION=big_job
 ```
 
 The real `.env` is machine-specific and intentionally ignored by version
@@ -206,9 +206,9 @@ uv run python main.py fit \
   --trainer.devices 1
 ```
 
-Set `FINETUNING_OUTPUT_DIR` and `FINETUNING_ADAPTER_DIR` manually for direct
-runs if you do not use the Slurm helper. One run writes one QLoRA adapter
-bundle to `FINETUNING_ADAPTER_DIR`.
+Direct runs default to `./outputs` and `./outputs/qlora_adapter`. Set
+`FINETUNING_OUTPUT_DIR` and `FINETUNING_ADAPTER_DIR` only when the run should
+write elsewhere.
 
 ## Tests
 
