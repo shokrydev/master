@@ -25,7 +25,7 @@ export UNSLOTH_DISABLE_STATISTICS=1  # skip silent telemetry downloads that stal
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 CONDITION_CONFIG="${CONDITION_CONFIG:-}"
-VALIDATION_CONFIG="${VALIDATION_CONFIG:-}"
+FIT_VALIDATION_CONFIG="${FIT_VALIDATION_CONFIG:-}"
 SMOKE_CONFIG="${SMOKE_CONFIG:-}"
 CAPTION_TARGET_CONFIG="${CAPTION_TARGET_CONFIG:-}"
 
@@ -75,8 +75,8 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 CONFIG_ARGS=(--config configs/finetuning/bigearthnet_txt_shared.yaml)
-if [ -n "$VALIDATION_CONFIG" ]; then
-    CONFIG_ARGS+=(--config "$VALIDATION_CONFIG")
+if [ -n "$FIT_VALIDATION_CONFIG" ]; then
+    CONFIG_ARGS+=(--config "$FIT_VALIDATION_CONFIG")
 fi
 if [ -n "$CONDITION_CONFIG" ]; then
     CONFIG_ARGS+=(--config "$CONDITION_CONFIG")
@@ -91,7 +91,7 @@ fi
 printf 'Config args:'
 printf ' %q' "${CONFIG_ARGS[@]}"
 printf '\n'
-echo "Validation config: ${VALIDATION_CONFIG:-<none>}"
+echo "Fit validation config: ${FIT_VALIDATION_CONFIG:-<none>}"
 echo "Caption target config: ${CAPTION_TARGET_CONFIG:-<none>}"
 echo "Output dir: $OUTPUT_DIR"
 echo "Adapter dir: $FINETUNING_ADAPTER_DIR"
