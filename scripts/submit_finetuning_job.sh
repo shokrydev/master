@@ -149,6 +149,9 @@ fi
 if [ "$FIT_VALIDATION_CONFIG" = "configs/finetuning/bigearthnet_txt_early_convergence_diagnostic.yaml" ]; then
     RUN_KIND="early"
 fi
+if [ "$FIT_VALIDATION_CONFIG" = "configs/finetuning/bigearthnet_txt_initial_convergence_diagnostic.yaml" ]; then
+    RUN_KIND="initial"
+fi
 
 REQUIRED_ENV_VARS=(
     BIGEARTHNET_V2_LMDB_ROOT
