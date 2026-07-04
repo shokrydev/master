@@ -478,6 +478,18 @@ class AdapterArtifactSetupTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "loc_mode='loc_text'"):
             Qwen3VLModule(location_text_template="lat {lat}")
 
+    def test_coordinates_decimal_places_requires_loc_text_mode(self):
+        with self.assertRaisesRegex(ValueError, "loc_mode='loc_text'"):
+            Qwen3VLModule(coordinates_decimal_places=2)
+
+    def test_coordinates_decimal_places_must_be_non_negative(self):
+        with self.assertRaisesRegex(ValueError, "coordinates_decimal_places"):
+            Qwen3VLModule(
+                loc_mode="loc_text",
+                location_text_template="Scene coordinates: {location}.",
+                coordinates_decimal_places=-1,
+            )
+
     def test_loc_embed_requires_location_embed_marker(self):
         with self.assertRaisesRegex(ValueError, "location_embed_marker"):
             Qwen3VLModule(loc_mode="loc_embed")

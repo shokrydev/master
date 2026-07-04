@@ -59,6 +59,7 @@ class Qwen3VLModule(L.LightningModule):
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
         loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
         location_text_template: str | None = None,
+        coordinates_decimal_places: int = 0,
         location_embed_marker: str | None = None,
         non_rgb_conditioning: Literal["disabled", "enabled"] = "disabled",
         non_rgb_encoder_dir: str | None = None,
@@ -104,6 +105,8 @@ class Qwen3VLModule(L.LightningModule):
             location_text_template: Format string appended to the user prompt when
                 `loc_mode="loc_text"`. Coordinate formatting is handled by the
                 shared collator.
+            coordinates_decimal_places: Decimal places used for the compact
+                `{location}` field in `location_text_template`.
             location_embed_marker: Text marker appended to the prompt before
                 projected SatCLIP tokens when `loc_mode="loc_embed"`.
             non_rgb_conditioning: Whether non-RGB imagery conditions Qwen.
@@ -137,6 +140,10 @@ class Qwen3VLModule(L.LightningModule):
             raise ValueError("loc_mode='loc_text' requires location_text_template")
         if loc_mode != "loc_text" and location_text_template is not None:
             raise ValueError("location_text_template is only used when loc_mode='loc_text'")
+        if coordinates_decimal_places < 0:
+            raise ValueError("coordinates_decimal_places must be non-negative")
+        if loc_mode != "loc_text" and coordinates_decimal_places != 0:
+            raise ValueError("coordinates_decimal_places is only used when loc_mode='loc_text'")
         if loc_mode == "loc_embed" and not location_embed_marker:
             raise ValueError("loc_mode='loc_embed' requires location_embed_marker")
         if loc_mode != "loc_embed" and location_embed_marker is not None:
@@ -185,6 +192,7 @@ class Qwen3VLModule(L.LightningModule):
         self.system_prompt = system_prompt
         self.loc_mode = loc_mode
         self.location_text_template = location_text_template
+        self.coordinates_decimal_places = coordinates_decimal_places
         self.location_embed_marker = location_embed_marker
         self.non_rgb_conditioning = non_rgb_conditioning
         self.non_rgb_encoder_dir = str(non_rgb_encoder_dir) if non_rgb_encoder_dir else None
@@ -303,6 +311,7 @@ class Qwen3VLModule(L.LightningModule):
             base_collator,
             system_prompt=self.system_prompt,
             location_text_template=location_prompt_template,
+            coordinates_decimal_places=self.coordinates_decimal_places,
         )
         self._set_datamodule_collator()
 

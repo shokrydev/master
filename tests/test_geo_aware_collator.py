@@ -113,6 +113,46 @@ class TestGeoAwareCollator(unittest.TestCase):
             "Scene coordinates: 52°S, 14°E.",
         )
 
+    def test_appends_compact_decimal_location_text(self) -> None:
+        captured = {}
+
+        def inner_collator(cleaned):
+            captured["cleaned"] = cleaned
+            return {"input_ids": torch.tensor([[1, 2, 3]])}
+
+        collator = GeoAwareCollator(
+            inner_collator,
+            location_text_template=DEFAULT_LOCATION_TEXT_TEMPLATE,
+            coordinates_decimal_places=2,
+        )
+
+        collator(
+            [
+                {
+                    "image": object(),
+                    "input_text": "Which land cover classes are present?",
+                    "target_texts": ["Urban fabric"],
+                    "lat": -52.12346,
+                    "lon": 13.98765,
+                }
+            ]
+        )
+
+        user_text = captured["cleaned"][0]["messages"][0]["content"][0]["text"]
+        self.assertEqual(
+            user_text,
+            "Which land cover classes are present?\n"
+            "Scene coordinates: 52.12°S, 13.99°E.",
+        )
+
+    def test_rejects_negative_coordinates_decimal_places(self) -> None:
+        with self.assertRaisesRegex(ValueError, "coordinates_decimal_places"):
+            GeoAwareCollator(
+                lambda cleaned: {},
+                location_text_template=DEFAULT_LOCATION_TEXT_TEMPLATE,
+                coordinates_decimal_places=-1,
+            )
+
     def test_appends_location_embed_marker_without_coordinate_text(self) -> None:
         captured = {}
 

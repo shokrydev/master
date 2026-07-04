@@ -7,11 +7,16 @@ DEFAULT_LOCATION_TEXT_TEMPLATE = "Scene coordinates: {location}."
 DEFAULT_LOCATION_EMBED_MARKER = "Scene coordinates:"
 
 
-def _location_template_fields(lat: float, lon: float) -> dict[str, Any]:
+def _location_template_fields(
+    lat: float,
+    lon: float,
+    *,
+    decimal_places: int,
+) -> dict[str, Any]:
     return {
         "lat": lat,
         "lon": lon,
-        "location": _compact_integer_location(lat, lon),
+        "location": _compact_location(lat, lon, decimal_places=decimal_places),
     }
 
 
@@ -19,12 +24,17 @@ def _rounded_abs_degrees(value: float) -> int:
     return math.floor(abs(value) + 0.5)
 
 
-def _compact_integer_location(lat: float, lon: float) -> str:
+def _compact_location(lat: float, lon: float, *, decimal_places: int) -> str:
     lat_hemisphere = "N" if lat >= 0 else "S"
     lon_hemisphere = "E" if lon >= 0 else "W"
+    if decimal_places == 0:
+        return (
+            f"{_rounded_abs_degrees(lat)}°{lat_hemisphere}, "
+            f"{_rounded_abs_degrees(lon)}°{lon_hemisphere}"
+        )
     return (
-        f"{_rounded_abs_degrees(lat)}°{lat_hemisphere}, "
-        f"{_rounded_abs_degrees(lon)}°{lon_hemisphere}"
+        f"{abs(lat):.{decimal_places}f}°{lat_hemisphere}, "
+        f"{abs(lon):.{decimal_places}f}°{lon_hemisphere}"
     )
 
 
@@ -55,10 +65,14 @@ class GeoAwareCollator:
         inner_collator,
         system_prompt: str | None = None,
         location_text_template: str | None = None,
+        coordinates_decimal_places: int = 0,
     ):
+        if coordinates_decimal_places < 0:
+            raise ValueError("coordinates_decimal_places must be non-negative")
         self.inner_collator = inner_collator
         self.system_prompt = system_prompt
         self.location_text_template = location_text_template
+        self.coordinates_decimal_places = coordinates_decimal_places
 
     def _to_messages(self, image: Any, input_text: str, target_text: str) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
@@ -82,7 +96,13 @@ class GeoAwareCollator:
     def _with_location_text(self, input_text: str, lat: float, lon: float) -> str:
         if not self.location_text_template:
             return input_text
-        location_text = self.location_text_template.format(**_location_template_fields(lat, lon))
+        location_text = self.location_text_template.format(
+            **_location_template_fields(
+                lat,
+                lon,
+                decimal_places=self.coordinates_decimal_places,
+            )
+        )
         return f"{input_text}\n{location_text}"
 
     def __call__(self, items: list[dict[str, Any]]) -> dict[str, Any]:
