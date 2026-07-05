@@ -24,6 +24,31 @@ QWEN_MODALITY_PROJECTION_MODULES = [
 ]
 
 
+def _slice_batch_indices(batch: dict[str, Any], indices: list[int]) -> dict[str, Any]:
+    """Return a shallow batch copy containing the selected sample indices."""
+    if not indices:
+        raise ValueError("indices must not be empty")
+    batch_size = int(batch["input_ids"].shape[0])
+    invalid_indices = [index for index in indices if index < 0 or index >= batch_size]
+    if invalid_indices:
+        raise IndexError(f"Batch indices out of range: {invalid_indices}")
+    sliced = {}
+    for key, value in batch.items():
+        if isinstance(value, torch.Tensor) and value.ndim > 0 and value.shape[0] == batch_size:
+            sliced[key] = value[indices]
+        elif key == "non_rgb_bands" and isinstance(value, list) and all(
+            isinstance(item, str) for item in value
+        ):
+            sliced[key] = value
+        elif isinstance(value, list) and len(value) == batch_size:
+            sliced[key] = [value[index] for index in indices]
+        elif isinstance(value, tuple) and len(value) == batch_size:
+            sliced[key] = tuple(value[index] for index in indices)
+        else:
+            sliced[key] = value
+    return sliced
+
+
 class Qwen3VLModule(L.LightningModule):
     """
     PyTorch Lightning Module for finetuning Qwen3-VL using Unsloth.
@@ -56,6 +81,8 @@ class Qwen3VLModule(L.LightningModule):
         max_steps: int | None = None,
         max_new_tokens: int = 256,
         num_validation_generation_batches: int = 0,
+        validation_trace_sample_ids: list[str] | None = None,
+        validation_trace_path: str | None = None,
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
         loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
         location_text_template: str | None = None,
@@ -100,6 +127,9 @@ class Qwen3VLModule(L.LightningModule):
             num_validation_generation_batches: Number of validation batches
                 that run autoregressive generation in addition to validation
                 loss. Use 0 for loss-only validation. Test always generates.
+            validation_trace_sample_ids: Explicit sample IDs for qualitative
+                validation traces.
+            validation_trace_path: JSONL file for qualitative validation traces.
             system_prompt: Optional system message injected during chat formatting.
             loc_mode: Location conditioning mode ("no_loc", "loc_text", "loc_embed")
             location_text_template: Format string appended to the user prompt when
@@ -154,6 +184,13 @@ class Qwen3VLModule(L.LightningModule):
             raise ValueError("non_rgb_projection_lr_multiplier must be positive")
         if num_validation_generation_batches < 0:
             raise ValueError("num_validation_generation_batches must be non-negative")
+        validation_trace_sample_ids = validation_trace_sample_ids or []
+        if len(set(validation_trace_sample_ids)) != len(validation_trace_sample_ids):
+            raise ValueError("validation_trace_sample_ids must not contain duplicates")
+        if validation_trace_sample_ids and not validation_trace_path:
+            raise ValueError("validation_trace_path is required when validation tracing is enabled")
+        if validation_trace_path and not validation_trace_sample_ids:
+            raise ValueError("validation_trace_sample_ids is required when validation_trace_path is set")
         if not 0.0 <= warmup_ratio < 1.0:
             raise ValueError("warmup_ratio must be in the interval [0, 1)")
         if non_rgb_feature_mode not in {"spatial_4x4", "pooled_prelogit"}:
@@ -189,6 +226,9 @@ class Qwen3VLModule(L.LightningModule):
         self.max_steps = max_steps
         self.max_new_tokens = max_new_tokens
         self.num_validation_generation_batches = num_validation_generation_batches
+        self.validation_trace_sample_ids = tuple(str(sample_id) for sample_id in validation_trace_sample_ids)
+        self._validation_trace_sample_id_set = set(self.validation_trace_sample_ids)
+        self.validation_trace_path = str(validation_trace_path) if validation_trace_path else None
         self.system_prompt = system_prompt
         self.loc_mode = loc_mode
         self.location_text_template = location_text_template
@@ -740,6 +780,24 @@ class Qwen3VLModule(L.LightningModule):
         """Check whether this validation batch should run free generation."""
         return batch_idx < self.num_validation_generation_batches
 
+    def _validation_trace_indices(self, batch: dict[str, Any], batch_idx: int) -> list[int]:
+        """Return sample indices that should be generated for qualitative traces."""
+        if not self.validation_trace_path:
+            return []
+        trainer = self._trainer_or_none()
+        if trainer is not None and not trainer.is_global_zero:
+            return []
+        if self.validation_trace_sample_ids:
+            batch_sample_ids = batch.get("sample_id")
+            if batch_sample_ids is None:
+                raise ValueError("validation_trace_sample_ids requires sample_id in validation batches")
+            return [
+                index
+                for index, sample_id in enumerate(batch_sample_ids)
+                if str(sample_id) in self._validation_trace_sample_id_set
+            ]
+        return []
+
     def _generate_for_batch(self, batch: dict[str, Any]) -> list[str]:
         """Run greedy generation on a batch and return decoded predictions."""
         gen_batch = {k: v for k, v in batch.items() if k != "labels"}
@@ -763,8 +821,49 @@ class Qwen3VLModule(L.LightningModule):
             predictions.append(text)
         return predictions
 
+    def _write_validation_trace(
+        self,
+        *,
+        predictions: list[str],
+        target_texts: list[list[str]] | None,
+        lat: torch.Tensor | None,
+        lon: torch.Tensor | None,
+        sample_metadata: dict[str, Any],
+        batch_idx: int,
+    ) -> None:
+        if not self.validation_trace_path:
+            return
+        output_path = Path(self.validation_trace_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        trainer = self._trainer_or_none()
+        global_step = int(trainer.global_step) if trainer is not None else 0
+        with output_path.open("a", encoding="utf-8") as handle:
+            for index, prediction in enumerate(predictions):
+                entry = {
+                    "global_step": global_step,
+                    "validation_batch_idx": batch_idx,
+                    "trace_index": index,
+                    "prediction": prediction,
+                    "target_texts": target_texts[index] if target_texts else [],
+                    "location_condition": self.loc_mode,
+                    "model_name_or_path": self.model_name_or_path,
+                    "max_new_tokens": self.max_new_tokens,
+                }
+                for key, values in sample_metadata.items():
+                    if values is not None:
+                        entry[key] = values[index]
+                if lat is not None and lon is not None:
+                    entry["lat"] = float(lat[index])
+                    entry["lon"] = float(lon[index])
+                handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Validation step with loss and optional generated-answer metrics."""
+        trace_batch = None
+        trace_indices = self._validation_trace_indices(batch, batch_idx)
+        if trace_indices:
+            trace_batch = _slice_batch_indices(batch, trace_indices)
+
         batch, target_texts, _, _, _, sample_metadata = self._prepare_model_inputs(batch)
         batch_size = batch["input_ids"].shape[0]
         with torch.no_grad():
@@ -799,6 +898,22 @@ class Qwen3VLModule(L.LightningModule):
             result["generated"] = predictions[0] if predictions else ""
 
         self._reset_projected_token_state()
+
+        if trace_batch is not None and self.max_new_tokens > 0:
+            trace_batch, trace_targets, trace_lat, trace_lon, _, trace_metadata = (
+                self._prepare_model_inputs(trace_batch)
+            )
+            trace_predictions = self._generate_for_batch(trace_batch)
+            self._write_validation_trace(
+                predictions=trace_predictions,
+                target_texts=trace_targets,
+                lat=trace_lat,
+                lon=trace_lon,
+                sample_metadata=trace_metadata,
+                batch_idx=batch_idx,
+            )
+            self._reset_projected_token_state()
+
         return result
 
     def on_validation_epoch_end(self) -> None:

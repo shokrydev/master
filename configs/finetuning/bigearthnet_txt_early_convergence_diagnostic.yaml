@@ -14,6 +14,16 @@ trainer:
 model:
   init_args:
     num_validation_generation_batches: 0
+    validation_trace_sample_ids:
+      - "8826437"  # captioning
+      - "5819150"  # binary / presence
+      - "506304"   # binary / adjacency
+      - "8303198"  # mcq / country
+      - "3031417"  # mcq / climate zone
+      - "8457166"  # mcq / season
+      - "5513687"  # bounding box / point
+      - "5820049"  # bounding box / reference
+    validation_trace_path: ${paths.output_dir}/validation_generation_trace.jsonl
 
 data:
   init_args:

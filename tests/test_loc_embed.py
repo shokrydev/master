@@ -81,6 +81,7 @@ def _install_qwen3_test_stubs():
 _install_qwen3_test_stubs()
 qwen3_module = importlib.import_module("src.lightning_modules.qwen3_vl_module")
 Qwen3VLModule = qwen3_module.Qwen3VLModule
+_slice_batch_indices = qwen3_module._slice_batch_indices
 
 
 def _install_captioning_stub():
@@ -120,6 +121,67 @@ def _build_encoder_test_module(num_location_tokens: int = 2):
 
 
 class InsertTokenHelpersTest(unittest.TestCase):
+    def test_slice_batch_indices_preserves_shared_band_order(self):
+        batch = {
+            "input_ids": torch.arange(12).reshape(4, 3),
+            "lat": torch.tensor([1.0, 2.0, 3.0, 4.0]),
+            "input_text": ["a", "b", "c", "d"],
+            "target_texts": [["ta"], ["tb"], ["tc"], ["td"]],
+            "non_rgb_bands": ["VV", "VH", "B04", "B03"],
+        }
+
+        sliced = _slice_batch_indices(batch, [2, 0])
+
+        self.assertTrue(torch.equal(sliced["input_ids"], torch.tensor([[6, 7, 8], [0, 1, 2]])))
+        self.assertTrue(torch.equal(sliced["lat"], torch.tensor([3.0, 1.0])))
+        self.assertEqual(sliced["input_text"], ["c", "a"])
+        self.assertEqual(sliced["target_texts"], [["tc"], ["ta"]])
+        self.assertEqual(sliced["non_rgb_bands"], ["VV", "VH", "B04", "B03"])
+
+    def test_validation_trace_indices_use_explicit_sample_ids(self):
+        module = object.__new__(Qwen3VLModule)
+        module.validation_trace_path = "trace.jsonl"
+        module.validation_trace_sample_ids = ("row-c", "row-a")
+        module._validation_trace_sample_id_set = set(module.validation_trace_sample_ids)
+        module._trainer_or_none = lambda: types.SimpleNamespace(is_global_zero=True)
+        batch = {
+            "input_ids": torch.ones(4, 3),
+            "sample_id": ["row-a", "row-b", "row-c", "row-d"],
+        }
+
+        self.assertEqual(module._validation_trace_indices(batch, batch_idx=5), [0, 2])
+
+    def test_write_validation_trace_appends_jsonl_records(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module = object.__new__(Qwen3VLModule)
+            module.validation_trace_path = str(Path(tmpdir) / "trace.jsonl")
+            module.loc_mode = "loc_text"
+            module.model_name_or_path = "qwen-test"
+            module.max_new_tokens = 32
+            module._trainer_or_none = lambda: types.SimpleNamespace(global_step=12)
+
+            module._write_validation_trace(
+                predictions=["yes", "no"],
+                target_texts=[["yes"], ["no"]],
+                lat=torch.tensor([48.1, 49.2]),
+                lon=torch.tensor([12.3, 13.4]),
+                sample_metadata={
+                    "input_text": ["Question A", "Question B"],
+                    "sample_id": ["row-a", "row-b"],
+                    "patch_id": ["patch-a", "patch-b"],
+                    "task_type": ["binary", "binary"],
+                    "task_category": ["country", "season"],
+                    "split": ["validation", "validation"],
+                },
+                batch_idx=0,
+            )
+
+            lines = (Path(tmpdir) / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertIn('"global_step": 12', lines[0])
+            self.assertIn('"prediction": "yes"', lines[0])
+            self.assertIn('"sample_id": "row-a"', lines[0])
+
     def test_insert_tokens_2d_preserves_order_and_positions(self):
         tensor = torch.tensor([[1, 2, 3, 4], [10, 11, 12, 13]])
         insert = torch.tensor([[90, 91], [80, 81]])
@@ -501,6 +563,21 @@ class AdapterArtifactSetupTest(unittest.TestCase):
     def test_location_projection_lr_multiplier_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "location_projection_lr_multiplier"):
             Qwen3VLModule(location_projection_lr_multiplier=0.0)
+
+    def test_validation_trace_sample_ids_require_path(self):
+        with self.assertRaisesRegex(ValueError, "validation_trace_path"):
+            Qwen3VLModule(validation_trace_sample_ids=["row-a"])
+
+    def test_validation_trace_path_requires_sample_ids(self):
+        with self.assertRaisesRegex(ValueError, "validation_trace_sample_ids"):
+            Qwen3VLModule(validation_trace_path="trace.jsonl")
+
+    def test_validation_trace_sample_ids_must_be_unique(self):
+        with self.assertRaisesRegex(ValueError, "duplicates"):
+            Qwen3VLModule(
+                validation_trace_sample_ids=["row-a", "row-a"],
+                validation_trace_path="trace.jsonl",
+            )
 
     def test_non_rgb_projection_lr_multiplier_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "non_rgb_projection_lr_multiplier"):
