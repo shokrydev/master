@@ -98,7 +98,7 @@ class Qwen3VLModule(L.LightningModule):
         satclip_dim: int = 256,
         num_location_tokens: int = 1,
         location_projection_lr_multiplier: float = 1.0,
-        test_predictions_path: str | None = None,
+        prediction_export_path: str | None = None,
     ):
         """
         Initialize Qwen3-VL finetuning module.
@@ -154,7 +154,7 @@ class Qwen3VLModule(L.LightningModule):
             num_location_tokens: Number of location tokens to insert before the visual block (encoder mode)
             location_projection_lr_multiplier: Learning-rate multiplier for
                 the randomly initialized SatCLIP-to-Qwen projection.
-            test_predictions_path: If set, save per-sample predictions to this JSON path during test
+            prediction_export_path: If set, stream per-sample test predictions to this JSONL path.
         """
         super().__init__()
 
@@ -238,7 +238,7 @@ class Qwen3VLModule(L.LightningModule):
         self.satclip_dim = satclip_dim
         self.num_location_tokens = num_location_tokens
         self.location_projection_lr_multiplier = location_projection_lr_multiplier
-        self.test_predictions_path = test_predictions_path
+        self.prediction_export_path = str(prediction_export_path) if prediction_export_path else None
 
         self.model = None
         self.tokenizer = None
@@ -253,11 +253,7 @@ class Qwen3VLModule(L.LightningModule):
         self._location_insertion_state = None
         self._non_rgb_insertion_state = None
 
-        # Test prediction accumulator (for saving per-sample predictions to JSON)
-        self._test_predictions: list[dict[str, Any]] = []
-
-        # Captioning metrics (initialized in setup)
-        self.test_captioning_metrics = None
+        self._prediction_export_count = 0
 
     def _trainer_or_none(self) -> Any | None:
         """Return the attached Trainer, or None for direct utility execution."""
@@ -356,11 +352,6 @@ class Qwen3VLModule(L.LightningModule):
             self._setup_non_rgb_conditioning()
             if self.adapter_dir is not None:
                 self._load_non_rgb_projection_artifacts()
-
-        # Initialize generated-answer metrics only for final evaluation.
-        from src.metrics.captioning import CaptioningMetrics
-        if stage == "test":
-            self.test_captioning_metrics = CaptioningMetrics()
 
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in self.model.parameters())
@@ -752,20 +743,6 @@ class Qwen3VLModule(L.LightningModule):
         )
         return outputs.loss
 
-    @staticmethod
-    def _caption_indices(
-        predictions: list[str],
-        sample_metadata: dict[str, Any],
-    ) -> list[int]:
-        task_types = sample_metadata.get("task_type")
-        if task_types is None:
-            return list(range(len(predictions)))
-        return [
-            index
-            for index, task_type in enumerate(task_types)
-            if str(task_type) == "captioning"
-        ]
-
     def _validation_trace_indices(self, batch: dict[str, Any], batch_idx: int) -> list[int]:
         """Return sample indices that should be generated for qualitative traces."""
         if not self.validation_trace_path:
@@ -885,8 +862,53 @@ class Qwen3VLModule(L.LightningModule):
 
         return result
 
+    def _write_prediction_export(
+        self,
+        *,
+        predictions: list[str],
+        target_texts: list[list[str]] | None,
+        lat: torch.Tensor | None,
+        lon: torch.Tensor | None,
+        sample_metadata: dict[str, Any],
+    ) -> None:
+        if not self.prediction_export_path:
+            return
+        output_path = Path(self.prediction_export_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("a", encoding="utf-8") as handle:
+            for index, prediction in enumerate(predictions):
+                entry = {
+                    "prediction": prediction,
+                    "target_texts": target_texts[index] if target_texts else [],
+                    "location_condition": self.loc_mode,
+                    "model_name_or_path": self.model_name_or_path,
+                    "adapter_dir": self.adapter_dir,
+                }
+                for key, values in sample_metadata.items():
+                    if values is not None:
+                        entry[key] = values[index]
+                if lat is not None and lon is not None:
+                    entry["lat"] = float(lat[index])
+                    entry["lon"] = float(lon[index])
+                handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                self._prediction_export_count += 1
+
+    def on_test_start(self) -> None:
+        """Initialize streaming prediction export."""
+        if not self.prediction_export_path:
+            return
+        trainer = self._trainer_or_none()
+        if trainer is not None and getattr(trainer, "world_size", 1) != 1:
+            raise ValueError("prediction_export_path currently supports single-process evaluation only")
+        if trainer is not None and not trainer.is_global_zero:
+            return
+        output_path = Path(self.prediction_export_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("", encoding="utf-8")
+        self._prediction_export_count = 0
+
     def test_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
-        """Test step — always generates and accumulates captioning metrics."""
+        """Test step with loss logging and optional raw prediction export."""
         batch, target_texts, lat, lon, _, sample_metadata = self._prepare_model_inputs(batch)
         batch_size = batch["input_ids"].shape[0]
         with torch.no_grad():
@@ -908,31 +930,13 @@ class Qwen3VLModule(L.LightningModule):
             if batch_idx == 0 and predictions:
                 self._print(f"\n[Test Sample] Generated: {predictions[0][:500]}...")
 
-            if self.test_captioning_metrics is not None and target_texts is not None:
-                caption_indices = self._caption_indices(predictions, sample_metadata)
-                if caption_indices:
-                    self.test_captioning_metrics.update(
-                        [predictions[index] for index in caption_indices],
-                        [target_texts[index] for index in caption_indices],
-                    )
-
-            # Accumulate per-sample predictions for JSON export
-            if self.test_predictions_path:
-                for i, pred in enumerate(predictions):
-                    entry = {
-                        "prediction": pred,
-                        "target_texts": target_texts[i] if target_texts else [],
-                        "location_condition": self.loc_mode,
-                        "model_name_or_path": self.model_name_or_path,
-                        "adapter_dir": self.adapter_dir,
-                    }
-                    for key, values in sample_metadata.items():
-                        if values is not None:
-                            entry[key] = values[i]
-                    if lat is not None:
-                        entry["lat"] = float(lat[i])
-                        entry["lon"] = float(lon[i])
-                    self._test_predictions.append(entry)
+            self._write_prediction_export(
+                predictions=predictions,
+                target_texts=target_texts,
+                lat=lat,
+                lon=lon,
+                sample_metadata=sample_metadata,
+            )
 
             result["generated"] = predictions[0] if predictions else ""
 
@@ -940,20 +944,12 @@ class Qwen3VLModule(L.LightningModule):
         return result
 
     def on_test_epoch_end(self) -> None:
-        """Compute and log captioning metrics at the end of testing."""
-        if self.test_captioning_metrics is not None and len(self.test_captioning_metrics.predictions) > 0:
-            scores = self.test_captioning_metrics.compute()
-            for name, value in scores.items():
-                self.log(f"test/{name}", value, sync_dist=True)
-            self.test_captioning_metrics.reset()
-
-        # Save per-sample predictions to JSON
-        if self.test_predictions_path and self._test_predictions:
-            Path(self.test_predictions_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(self.test_predictions_path, "w") as f:
-                json.dump(self._test_predictions, f, indent=2)
-            self._print(f"Saved {len(self._test_predictions)} predictions to {self.test_predictions_path}")
-            self._test_predictions = []
+        """Report prediction export completion."""
+        if self.prediction_export_path and self._prediction_export_count:
+            self._print(
+                f"Saved {self._prediction_export_count} predictions to "
+                f"{self.prediction_export_path}"
+            )
 
     def configure_optimizers(self):
         """Configure optimizer and learning rate scheduler."""

@@ -1,5 +1,6 @@
 import importlib
 import importlib.machinery
+import json
 import sys
 import tempfile
 import types
@@ -83,27 +84,6 @@ qwen3_module = importlib.import_module("src.lightning_modules.qwen3_vl_module")
 Qwen3VLModule = qwen3_module.Qwen3VLModule
 _slice_batch_indices = qwen3_module._slice_batch_indices
 
-
-def _install_captioning_stub():
-    captioning = types.ModuleType("src.metrics.captioning")
-
-    class CaptioningMetrics:
-        def __init__(self):
-            self.predictions = []
-
-        def update(self, *args, **kwargs):
-            return None
-
-        def compute(self):
-            return {}
-
-        def reset(self):
-            self.predictions = []
-
-    captioning.CaptioningMetrics = CaptioningMetrics
-    sys.modules["src.metrics.captioning"] = captioning
-
-
 def _build_encoder_test_module(num_location_tokens: int = 2):
     module = object.__new__(Qwen3VLModule)
     module.loc_mode = "loc_embed"
@@ -181,6 +161,46 @@ class InsertTokenHelpersTest(unittest.TestCase):
             self.assertIn('"global_step": 12', lines[0])
             self.assertIn('"prediction": "yes"', lines[0])
             self.assertIn('"sample_id": "row-a"', lines[0])
+
+    def test_write_prediction_export_appends_jsonl_records(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module = object.__new__(Qwen3VLModule)
+            module.prediction_export_path = str(Path(tmpdir) / "predictions.jsonl")
+            module.loc_mode = "loc_embed"
+            module.model_name_or_path = "qwen-test"
+            module.adapter_dir = "/tmp/adapter"
+            module._prediction_export_count = 0
+
+            module._write_prediction_export(
+                predictions=["yes", "no"],
+                target_texts=[["yes"], ["no"]],
+                lat=torch.tensor([48.1, 49.2]),
+                lon=torch.tensor([12.3, 13.4]),
+                sample_metadata={
+                    "input_text": ["Question A", "Question B"],
+                    "sample_id": ["row-a", "row-b"],
+                    "patch_id": ["patch-a", "patch-b"],
+                    "task_type": ["binary", "binary"],
+                    "task_category": ["country", "season"],
+                    "split": ["bench", "bench"],
+                },
+            )
+
+            lines = (Path(tmpdir) / "predictions.jsonl").read_text(encoding="utf-8").splitlines()
+            records = [json.loads(line) for line in lines]
+            self.assertEqual(len(records), 2)
+            self.assertEqual(records[0]["prediction"], "yes")
+            self.assertEqual(records[0]["sample_id"], "row-a")
+            self.assertEqual(records[0]["location_condition"], "loc_embed")
+            self.assertEqual(module._prediction_export_count, 2)
+
+    def test_prediction_export_rejects_distributed_test(self):
+        module = object.__new__(Qwen3VLModule)
+        module.prediction_export_path = "predictions.jsonl"
+        module._trainer_or_none = lambda: types.SimpleNamespace(world_size=2, is_global_zero=True)
+
+        with self.assertRaisesRegex(ValueError, "single-process"):
+            module.on_test_start()
 
     def test_insert_tokens_2d_preserves_order_and_positions(self):
         tensor = torch.tensor([[1, 2, 3, 4], [10, 11, 12, 13]])
@@ -357,19 +377,6 @@ class InsertTokenHelpersTest(unittest.TestCase):
 
 
 class PrepareModelInputsTest(unittest.TestCase):
-    def test_caption_indices_select_only_captioning_rows_when_metadata_exists(self):
-        indices = Qwen3VLModule._caption_indices(
-            ["caption", "yes", "option a"],
-            {"task_type": ["captioning", "binary", "mcq"]},
-        )
-
-        self.assertEqual(indices, [0])
-
-    def test_caption_indices_default_to_all_rows_without_task_metadata(self):
-        indices = Qwen3VLModule._caption_indices(["a", "b"], {"task_type": None})
-
-        self.assertEqual(indices, [0, 1])
-
     def test_prepare_model_inputs_inserts_ignore_labels_at_visual_boundary(self):
         module = _build_encoder_test_module(num_location_tokens=2)
         batch = {
@@ -592,7 +599,6 @@ class AdapterArtifactSetupTest(unittest.TestCase):
             Qwen3VLModule(non_rgb_spatial_pool_size=4, num_non_rgb_tokens=8)
 
     def test_validate_loads_saved_adapters_without_wrapping_peft_again(self):
-        _install_captioning_stub()
         calls = {}
 
         class FakeModel:

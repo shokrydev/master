@@ -13,7 +13,7 @@ trainer:
 model:
   init_args:
     adapter_dir: ${paths.adapter_dir}
-    test_predictions_path: null
+    prediction_export_path: null
 
 data:
   init_args:
