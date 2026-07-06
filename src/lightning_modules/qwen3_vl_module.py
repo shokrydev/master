@@ -666,6 +666,9 @@ class Qwen3VLModule(L.LightningModule):
             "task_type": batch.pop("task_type", None),
             "task_category": batch.pop("task_category", None),
             "split": batch.pop("split", None),
+            "country": batch.pop("country", None),
+            "season": batch.pop("season", None),
+            "climate_zone": batch.pop("climate_zone", None),
         }
         non_rgb_imagery = {
             "tensor": batch.pop("non_rgb_imagery", None),

@@ -152,6 +152,9 @@ class InsertTokenHelpersTest(unittest.TestCase):
                     "task_type": ["binary", "binary"],
                     "task_category": ["country", "season"],
                     "split": ["validation", "validation"],
+                    "country": ["Austria", "Portugal"],
+                    "season": ["Spring", "Summer"],
+                    "climate_zone": ["Cfb", "Csa"],
                 },
                 batch_idx=0,
             )
@@ -185,6 +188,9 @@ class InsertTokenHelpersTest(unittest.TestCase):
                     "task_type": ["binary", "binary"],
                     "task_category": ["country", "season"],
                     "split": ["bench", "bench"],
+                    "country": ["Austria", "Portugal"],
+                    "season": ["Spring", "Summer"],
+                    "climate_zone": ["Cfb", "Csa"],
                 },
             )
 
@@ -196,6 +202,9 @@ class InsertTokenHelpersTest(unittest.TestCase):
             self.assertEqual(records[0]["location_condition"], "loc_embed")
             self.assertEqual(records[0]["run_label"], "loc_embed-2B-full")
             self.assertEqual(records[0]["model_size"], "2B")
+            self.assertEqual(records[0]["country"], "Austria")
+            self.assertEqual(records[0]["season"], "Spring")
+            self.assertEqual(records[0]["climate_zone"], "Cfb")
             self.assertEqual(module._prediction_export_count, 2)
 
     def test_prediction_export_rejects_distributed_test(self):
@@ -394,6 +403,9 @@ class PrepareModelInputsTest(unittest.TestCase):
             "patch_id": ["patch-1", "patch-2"],
             "task_type": ["captioning", "binary"],
             "task_category": ["caption", "presence"],
+            "country": ["Austria", "Portugal"],
+            "season": ["Spring", "Summer"],
+            "climate_zone": ["Cfb", "Csa"],
         }
 
         model_batch, target_texts, lat, lon, non_rgb_imagery, metadata = (
@@ -414,7 +426,11 @@ class PrepareModelInputsTest(unittest.TestCase):
         self.assertEqual(metadata["patch_id"], ["patch-1", "patch-2"])
         self.assertEqual(metadata["task_type"], ["captioning", "binary"])
         self.assertEqual(metadata["task_category"], ["caption", "presence"])
+        self.assertEqual(metadata["country"], ["Austria", "Portugal"])
+        self.assertEqual(metadata["season"], ["Spring", "Summer"])
+        self.assertEqual(metadata["climate_zone"], ["Cfb", "Csa"])
         self.assertNotIn("task_type", model_batch)
+        self.assertNotIn("country", model_batch)
 
     def test_prepare_model_inputs_falls_back_to_sequence_end_without_visual_tokens(self):
         module = _build_encoder_test_module(num_location_tokens=1)

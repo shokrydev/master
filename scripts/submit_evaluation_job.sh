@@ -5,6 +5,7 @@
 # Usage:
 #   ./scripts/submit_evaluation_job.sh --condition loc_text --size 2B --adapter-dir /path/to/adapter
 #   ./scripts/submit_evaluation_job.sh --condition loc_embed --size 8B --adapter-dir /path/to/adapter --dry-run
+#   ./scripts/submit_evaluation_job.sh --condition loc_embed --size 2B --adapter-dir /path/to/adapter --coordinate-perturbation shuffled
 # ============================================================================
 
 set -e
@@ -23,6 +24,7 @@ CONDITION=""
 ADAPTER_DIR=""
 JOB_NAME=""
 RUN_LABEL=""
+COORDINATE_PERTURBATION=""
 PARTITION="${SLURM_DEFAULT_PARTITION:-}"
 TIME_LIMIT=""
 MEMORY=""
@@ -62,6 +64,11 @@ while [[ $# -gt 0 ]]; do
         --run-label)
             require_arg "$1" "${2:-}"
             RUN_LABEL="$2"
+            shift 2
+            ;;
+        --coordinate-perturbation)
+            require_arg "$1" "${2:-}"
+            COORDINATE_PERTURBATION="$2"
             shift 2
             ;;
         --partition)
@@ -135,12 +142,29 @@ case "$CONDITION" in
         ;;
 esac
 
+case "$COORDINATE_PERTURBATION" in
+    ""|shuffled|antipodal)
+        ;;
+    *)
+        echo "Invalid --coordinate-perturbation '$COORDINATE_PERTURBATION'. Use shuffled or antipodal."
+        exit 1
+        ;;
+esac
+if [ "$CONDITION" = "no_loc" ] && [ -n "$COORDINATE_PERTURBATION" ]; then
+    echo "--coordinate-perturbation is only meaningful for loc_text and loc_embed."
+    exit 1
+fi
+
 if [ -z "$ADAPTER_DIR" ]; then
     echo "Missing --adapter-dir."
     exit 1
 fi
 if [ -z "$RUN_LABEL" ]; then
-    RUN_LABEL="${CONDITION}-${SIZE}-eval"
+    if [ -n "$COORDINATE_PERTURBATION" ]; then
+        RUN_LABEL="${CONDITION}-${SIZE}-${COORDINATE_PERTURBATION}-eval"
+    else
+        RUN_LABEL="${CONDITION}-${SIZE}-eval"
+    fi
 fi
 if [ -z "$JOB_NAME" ]; then
     JOB_NAME="$RUN_LABEL"
@@ -181,6 +205,7 @@ echo "Condition: $CONDITION"
 echo "Size: $SIZE"
 echo "Model: $MODEL_NAME"
 echo "Adapter dir: $ADAPTER_DIR"
+echo "Coordinate perturbation: ${COORDINATE_PERTURBATION:-<none>}"
 echo "Run label: $RUN_LABEL"
 echo "Job name: $JOB_NAME"
 echo "Slurm partition: $PARTITION"
@@ -213,6 +238,9 @@ if [ -n "$CPUS" ]; then
 fi
 FULL_CMD+=("--export=ALL,CONDITION_CONFIG=$CONDITION_CONFIG,EVAL_ADAPTER_DIR=$ADAPTER_DIR,RUN_LABEL=$RUN_LABEL,MODEL_SIZE=$SIZE" "$SCRIPT")
 FULL_CMD+=("--model.init_args.model_name_or_path" "$MODEL_NAME")
+if [ -n "$COORDINATE_PERTURBATION" ]; then
+    FULL_CMD+=("--data.init_args.coordinate_perturbation" "$COORDINATE_PERTURBATION")
+fi
 FULL_CMD+=("${EXTRA_ARGS[@]}")
 
 printf 'Command:'

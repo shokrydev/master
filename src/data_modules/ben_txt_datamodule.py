@@ -33,9 +33,20 @@ _predefined_bandcombinations = {
 }
 _rgb_band_order = ["B04", "B03", "B02"]
 RGBRenderMode = Literal["copernicus", "quantile"]
+CoordinatePerturbation = Literal["shuffled", "antipodal"]
 _copernicus_rgb_scale = 3558.0
 _default_rgb_quantile = 0.90
 _InfoFn = Callable[[str], None]
+_optional_metadata_fields = (
+    "sample_id",
+    "patch_id",
+    "task_type",
+    "task_category",
+    "split",
+    "country",
+    "season",
+    "climate_zone",
+)
 
 """
 Band statistics for BigEarthNet v2 (including S1 stats from v1) after
@@ -197,13 +208,7 @@ def collate_normalized(batch):
     has_non_rgb_imagery = ["non_rgb_imagery" in item for item in batch]
     if any(has_non_rgb_imagery) and not all(has_non_rgb_imagery):
         raise ValueError("Either every sample or no sample must include 'non_rgb_imagery'")
-    optional_metadata = {
-        "sample_id": [],
-        "patch_id": [],
-        "task_type": [],
-        "task_category": [],
-        "split": [],
-    }
+    optional_metadata = {field: [] for field in _optional_metadata_fields}
 
     for item in batch:
         images.append(item["image"])
@@ -247,6 +252,29 @@ def _fixed_random_subset(dataset: Dataset, size: int, seed: int) -> Subset:
     generator = torch.Generator().manual_seed(seed)
     indices = torch.randperm(len(dataset), generator=generator)[:subset_size]
     return Subset(dataset, indices.tolist())
+
+
+def _apply_coordinate_perturbation(
+    metadata: pd.DataFrame,
+    perturbation: CoordinatePerturbation | None,
+) -> pd.DataFrame:
+    """Return metadata with coordinates perturbed for counterfactual evaluation."""
+    if perturbation is None:
+        return metadata
+    if perturbation not in {"shuffled", "antipodal"}:
+        raise ValueError("coordinate_perturbation must be one of: shuffled, antipodal")
+
+    perturbed = metadata.copy()
+    if perturbation == "shuffled":
+        rng = np.random.RandomState(42)
+        permutation = rng.permutation(len(perturbed))
+        perturbed["latitude"] = perturbed["latitude"].to_numpy()[permutation]
+        perturbed["longitude"] = perturbed["longitude"].to_numpy()[permutation]
+    else:
+        perturbed["latitude"] = -perturbed["latitude"]
+        longitude = perturbed["longitude"].to_numpy()
+        perturbed["longitude"] = np.where(longitude <= 0, longitude + 180, longitude - 180)
+    return perturbed
 
 
 def _sentinel2_rgb_tensor_to_pil(
@@ -414,6 +442,7 @@ class BENTxTDataset(Dataset):
             ref_token: str | None = None,
             use_location_redacted_captions: bool = False,
             location_redacted_caption_file: str | Path | None = None,
+            coordinate_perturbation: CoordinatePerturbation | None = None,
             info_fn: _InfoFn | None = None,
     ):
         """
@@ -449,6 +478,8 @@ class BENTxTDataset(Dataset):
             location_redacted_caption_file: Optional parquet with `patch_id`
                 and `refined_caption` columns. Required when
                 use_location_redacted_captions is true.
+            coordinate_perturbation: Optional counterfactual coordinate mode
+                for evaluation. Does not alter imagery or target text.
             info_fn: Optional callback function for logging information during initialization.
         """
         super().__init__()
@@ -503,6 +534,10 @@ class BENTxTDataset(Dataset):
         if splits is not None:
             self.text_data = self.text_data[self.text_data["split"].isin(splits)].reset_index(drop=True)
             log_info(f"Split {splits} text data contains {len(self.text_data)} entries")
+        self.text_data = _apply_coordinate_perturbation(
+            self.text_data,
+            coordinate_perturbation,
+        )
 
         if self.use_location_redacted_captions:
             self.location_redacted_captions = _load_location_redacted_captions(
@@ -603,6 +638,9 @@ class BENTxTDataset(Dataset):
             "task_type": str(sample.type),
             "task_category": str(sample.category),
             "split": str(sample.split),
+            "country": str(sample.country),
+            "season": str(sample.season),
+            "climate_zone": str(sample.climate_zone),
             "lat": lat,
             "lon": lon,
         }
@@ -650,6 +688,7 @@ class BENTxTDataModule(pl.LightningDataModule):
             ref_token: Iterable[str] | None = None,
             use_location_redacted_captions: bool = False,
             location_redacted_caption_file: str | Path | None = None,
+            coordinate_perturbation: CoordinatePerturbation | None = None,
             validation_subset_size: int | None = None,
             validation_subset_seed: int = 42,
             test_splits: Iterable[str] = ("test",),
@@ -690,6 +729,8 @@ class BENTxTDataModule(pl.LightningDataModule):
             location_redacted_caption_file: Optional parquet with `patch_id`
                 and `refined_caption` columns. Required when
                 use_location_redacted_captions is true.
+            coordinate_perturbation: Optional counterfactual coordinate mode
+                for evaluation. Does not alter imagery or target text.
             validation_subset_size: Optional fixed-size random subset used by
                 validation monitoring. The same seed selects the same rows.
             validation_subset_seed: Seed for the fixed validation subset.
@@ -751,6 +792,7 @@ class BENTxTDataModule(pl.LightningDataModule):
             "ref_token": ref_token,
             "use_location_redacted_captions": use_location_redacted_captions,
             "location_redacted_caption_file": location_redacted_caption_file,
+            "coordinate_perturbation": coordinate_perturbation,
         }
 
         self.mean = [means[band] for band in self.bands]

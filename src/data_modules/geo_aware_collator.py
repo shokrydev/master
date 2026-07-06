@@ -52,6 +52,9 @@ class GeoAwareCollator:
       - task_type (optional)
       - task_category (optional)
       - split (optional)
+      - country (optional)
+      - season (optional)
+      - climate_zone (optional)
       - non_rgb_imagery (optional)
       - non_rgb_bands (optional)
 
@@ -114,6 +117,9 @@ class GeoAwareCollator:
             "task_type": [],
             "task_category": [],
             "split": [],
+            "country": [],
+            "season": [],
+            "climate_zone": [],
         }
         non_rgb_images = []
         non_rgb_bands = []

@@ -7,6 +7,7 @@ from PIL import Image
 
 from src.data_modules.ben_txt_datamodule import (
     BENTxTDataModule,
+    _apply_coordinate_perturbation,
     _fixed_random_subset,
     _load_location_redacted_captions,
     _sentinel2_rgb_tensor_to_pil,
@@ -108,6 +109,9 @@ class TestBENTxTDataBoundary(unittest.TestCase):
                     "task_type": "captioning",
                     "task_category": "caption",
                     "split": "validation",
+                    "country": "Austria",
+                    "season": "Spring",
+                    "climate_zone": "Cfb",
                     "lat": 10.5,
                     "lon": 20.5,
                 },
@@ -120,6 +124,9 @@ class TestBENTxTDataBoundary(unittest.TestCase):
                     "task_type": "binary",
                     "task_category": "presence",
                     "split": "validation",
+                    "country": "Portugal",
+                    "season": "Summer",
+                    "climate_zone": "Csa",
                     "lat": -1.0,
                     "lon": 42.0,
                 },
@@ -134,12 +141,47 @@ class TestBENTxTDataBoundary(unittest.TestCase):
         self.assertEqual(batch["task_type"], ["captioning", "binary"])
         self.assertEqual(batch["task_category"], ["caption", "presence"])
         self.assertEqual(batch["split"], ["validation", "validation"])
+        self.assertEqual(batch["country"], ["Austria", "Portugal"])
+        self.assertEqual(batch["season"], ["Spring", "Summer"])
+        self.assertEqual(batch["climate_zone"], ["Cfb", "Csa"])
         self.assertTrue(
             torch.equal(batch["lat"], torch.tensor([10.5, -1.0], dtype=torch.float64))
         )
         self.assertTrue(
             torch.equal(batch["lon"], torch.tensor([20.5, 42.0], dtype=torch.float64))
         )
+
+    def test_coordinate_perturbation_is_deterministic_and_preserves_rows(self) -> None:
+        metadata = pd.DataFrame(
+            {
+                "ID": ["row-a", "row-b", "row-c"],
+                "latitude": [10.0, 20.0, 30.0],
+                "longitude": [1.0, 2.0, 3.0],
+            }
+        )
+
+        shuffled = _apply_coordinate_perturbation(metadata, "shuffled")
+        shuffled_again = _apply_coordinate_perturbation(metadata, "shuffled")
+
+        self.assertEqual(shuffled["ID"].tolist(), ["row-a", "row-b", "row-c"])
+        self.assertEqual(shuffled["latitude"].tolist(), shuffled_again["latitude"].tolist())
+        self.assertCountEqual(shuffled["latitude"].tolist(), [10.0, 20.0, 30.0])
+        self.assertCountEqual(shuffled["longitude"].tolist(), [1.0, 2.0, 3.0])
+
+    def test_antipodal_coordinate_perturbation_changes_only_coordinates(self) -> None:
+        metadata = pd.DataFrame(
+            {
+                "ID": ["row-a", "row-b"],
+                "latitude": [10.0, -20.0],
+                "longitude": [30.0, -40.0],
+            }
+        )
+
+        perturbed = _apply_coordinate_perturbation(metadata, "antipodal")
+
+        self.assertEqual(perturbed["ID"].tolist(), ["row-a", "row-b"])
+        self.assertEqual(perturbed["latitude"].tolist(), [-10.0, 20.0])
+        self.assertEqual(perturbed["longitude"].tolist(), [-150.0, 140.0])
 
 
 if __name__ == "__main__":
