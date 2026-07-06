@@ -80,7 +80,6 @@ class Qwen3VLModule(L.LightningModule):
         warmup_ratio: float = 0.1,
         max_steps: int | None = None,
         max_new_tokens: int = 256,
-        num_validation_generation_batches: int = 0,
         validation_trace_sample_ids: list[str] | None = None,
         validation_trace_path: str | None = None,
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
@@ -123,10 +122,7 @@ class Qwen3VLModule(L.LightningModule):
             weight_decay: Weight decay for optimizer
             warmup_ratio: Warmup ratio for scheduler
             max_steps: Total training steps (for scheduler)
-            max_new_tokens: Max tokens to generate for generated-answer metrics.
-            num_validation_generation_batches: Number of validation batches
-                that run autoregressive generation in addition to validation
-                loss. Use 0 for loss-only validation. Test always generates.
+            max_new_tokens: Max tokens to generate for validation traces and test predictions.
             validation_trace_sample_ids: Explicit sample IDs for qualitative
                 validation traces.
             validation_trace_path: JSONL file for qualitative validation traces.
@@ -182,8 +178,6 @@ class Qwen3VLModule(L.LightningModule):
             raise ValueError("location_projection_lr_multiplier must be positive")
         if non_rgb_projection_lr_multiplier <= 0:
             raise ValueError("non_rgb_projection_lr_multiplier must be positive")
-        if num_validation_generation_batches < 0:
-            raise ValueError("num_validation_generation_batches must be non-negative")
         validation_trace_sample_ids = validation_trace_sample_ids or []
         if len(set(validation_trace_sample_ids)) != len(validation_trace_sample_ids):
             raise ValueError("validation_trace_sample_ids must not contain duplicates")
@@ -225,7 +219,6 @@ class Qwen3VLModule(L.LightningModule):
         self.warmup_ratio = warmup_ratio
         self.max_steps = max_steps
         self.max_new_tokens = max_new_tokens
-        self.num_validation_generation_batches = num_validation_generation_batches
         self.validation_trace_sample_ids = tuple(str(sample_id) for sample_id in validation_trace_sample_ids)
         self._validation_trace_sample_id_set = set(self.validation_trace_sample_ids)
         self.validation_trace_path = str(validation_trace_path) if validation_trace_path else None
@@ -264,7 +257,6 @@ class Qwen3VLModule(L.LightningModule):
         self._test_predictions: list[dict[str, Any]] = []
 
         # Captioning metrics (initialized in setup)
-        self.val_captioning_metrics = None
         self.test_captioning_metrics = None
 
     def _trainer_or_none(self) -> Any | None:
@@ -365,10 +357,8 @@ class Qwen3VLModule(L.LightningModule):
             if self.adapter_dir is not None:
                 self._load_non_rgb_projection_artifacts()
 
-        # Initialize generated-answer metrics only for stages that use them.
+        # Initialize generated-answer metrics only for final evaluation.
         from src.metrics.captioning import CaptioningMetrics
-        if stage in {"fit", "validate"} and self.num_validation_generation_batches != 0:
-            self.val_captioning_metrics = CaptioningMetrics()
         if stage == "test":
             self.test_captioning_metrics = CaptioningMetrics()
 
@@ -776,10 +766,6 @@ class Qwen3VLModule(L.LightningModule):
             if str(task_type) == "captioning"
         ]
 
-    def _should_run_validation_generation(self, batch_idx: int) -> bool:
-        """Check whether this validation batch should run free generation."""
-        return batch_idx < self.num_validation_generation_batches
-
     def _validation_trace_indices(self, batch: dict[str, Any], batch_idx: int) -> list[int]:
         """Return sample indices that should be generated for qualitative traces."""
         if not self.validation_trace_path:
@@ -858,13 +844,13 @@ class Qwen3VLModule(L.LightningModule):
                 handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
-        """Validation step with loss and optional generated-answer metrics."""
+        """Validation step with loss and optional qualitative trace generation."""
         trace_batch = None
         trace_indices = self._validation_trace_indices(batch, batch_idx)
         if trace_indices:
             trace_batch = _slice_batch_indices(batch, trace_indices)
 
-        batch, target_texts, _, _, _, sample_metadata = self._prepare_model_inputs(batch)
+        batch, _, _, _, _, _ = self._prepare_model_inputs(batch)
         batch_size = batch["input_ids"].shape[0]
         with torch.no_grad():
             outputs = self.model(**batch)
@@ -879,23 +865,6 @@ class Qwen3VLModule(L.LightningModule):
             batch_size=batch_size,
         )
         result = {"loss": outputs.loss}
-
-        if self._should_run_validation_generation(batch_idx) and self.max_new_tokens > 0:
-            predictions = self._generate_for_batch(batch)
-
-            # Log a sample from the first batch
-            if batch_idx == 0 and predictions:
-                self._print(f"\n[Val Sample] Generated: {predictions[0][:500]}...")
-
-            if self.val_captioning_metrics is not None and target_texts is not None:
-                caption_indices = self._caption_indices(predictions, sample_metadata)
-                if caption_indices:
-                    self.val_captioning_metrics.update(
-                        [predictions[index] for index in caption_indices],
-                        [target_texts[index] for index in caption_indices],
-                    )
-
-            result["generated"] = predictions[0] if predictions else ""
 
         self._reset_projected_token_state()
 
@@ -915,14 +884,6 @@ class Qwen3VLModule(L.LightningModule):
             self._reset_projected_token_state()
 
         return result
-
-    def on_validation_epoch_end(self) -> None:
-        """Compute and log captioning metrics at the end of validation."""
-        if self.val_captioning_metrics is not None and len(self.val_captioning_metrics.predictions) > 0:
-            scores = self.val_captioning_metrics.compute()
-            for name, value in scores.items():
-                self.log(f"val/{name}", value, prog_bar=(name in ("bleu4", "cider")), sync_dist=True)
-            self.val_captioning_metrics.reset()
 
     def test_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Test step — always generates and accumulates captioning metrics."""

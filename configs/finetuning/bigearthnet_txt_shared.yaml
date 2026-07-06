@@ -79,7 +79,6 @@ model:
     warmup_ratio: 0.1
 
     max_new_tokens: 256
-    num_validation_generation_batches: 0
     system_prompt: You are a remote sensing image analysis assistant.
 
     loc_mode: no_loc

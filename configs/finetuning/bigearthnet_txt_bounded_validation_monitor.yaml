@@ -10,10 +10,6 @@ trainer:
   check_val_every_n_epoch: null
   num_sanity_val_steps: 0
 
-model:
-  init_args:
-    num_validation_generation_batches: 0
-
 data:
   init_args:
     validation_subset_size: 8192

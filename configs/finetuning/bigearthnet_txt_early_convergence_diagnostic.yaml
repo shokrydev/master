@@ -13,7 +13,6 @@ trainer:
 
 model:
   init_args:
-    num_validation_generation_batches: 0
     validation_trace_sample_ids:
       - "8826437"  # captioning
       - "5819150"  # binary / presence

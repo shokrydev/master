@@ -13,7 +13,6 @@ trainer:
 model:
   init_args:
     adapter_dir: ${paths.adapter_dir}
-    num_validation_generation_batches: 1
     test_predictions_path: null
 
 data:

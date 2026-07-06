@@ -385,7 +385,6 @@ def main_single(args: argparse.Namespace) -> dict[str, Any]:
         weight_decay=args.weight_decay,
         max_steps=profile_optimizer_steps,
         max_new_tokens=0,
-        num_validation_generation_batches=0,
         loc_mode=args.condition,
         location_text_template=(
             DEFAULT_LOCATION_TEXT_TEMPLATE if args.condition == "loc_text" else None

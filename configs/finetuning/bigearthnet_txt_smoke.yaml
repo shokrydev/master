@@ -16,8 +16,3 @@ trainer:
   check_val_every_n_epoch: 1
 
   log_every_n_steps: 1
-
-model:
-  init_args:
-    max_new_tokens: 32
-    num_validation_generation_batches: 1
