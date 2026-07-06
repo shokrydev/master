@@ -169,6 +169,8 @@ class InsertTokenHelpersTest(unittest.TestCase):
             module.loc_mode = "loc_embed"
             module.model_name_or_path = "qwen-test"
             module.adapter_dir = "/tmp/adapter"
+            module.run_label = "loc_embed-2B-full"
+            module.model_size = "2B"
             module._prediction_export_count = 0
 
             module._write_prediction_export(
@@ -192,6 +194,8 @@ class InsertTokenHelpersTest(unittest.TestCase):
             self.assertEqual(records[0]["prediction"], "yes")
             self.assertEqual(records[0]["sample_id"], "row-a")
             self.assertEqual(records[0]["location_condition"], "loc_embed")
+            self.assertEqual(records[0]["run_label"], "loc_embed-2B-full")
+            self.assertEqual(records[0]["model_size"], "2B")
             self.assertEqual(module._prediction_export_count, 2)
 
     def test_prediction_export_rejects_distributed_test(self):

@@ -99,6 +99,8 @@ class Qwen3VLModule(L.LightningModule):
         num_location_tokens: int = 1,
         location_projection_lr_multiplier: float = 1.0,
         prediction_export_path: str | None = None,
+        run_label: str | None = None,
+        model_size: str | None = None,
     ):
         """
         Initialize Qwen3-VL finetuning module.
@@ -155,6 +157,8 @@ class Qwen3VLModule(L.LightningModule):
             location_projection_lr_multiplier: Learning-rate multiplier for
                 the randomly initialized SatCLIP-to-Qwen projection.
             prediction_export_path: If set, stream per-sample test predictions to this JSONL path.
+            run_label: Human-readable run label exported with each prediction.
+            model_size: Model size label exported with each prediction, e.g. "2B".
         """
         super().__init__()
 
@@ -239,6 +243,8 @@ class Qwen3VLModule(L.LightningModule):
         self.num_location_tokens = num_location_tokens
         self.location_projection_lr_multiplier = location_projection_lr_multiplier
         self.prediction_export_path = str(prediction_export_path) if prediction_export_path else None
+        self.run_label = run_label
+        self.model_size = model_size
 
         self.model = None
         self.tokenizer = None
@@ -884,6 +890,10 @@ class Qwen3VLModule(L.LightningModule):
                     "model_name_or_path": self.model_name_or_path,
                     "adapter_dir": self.adapter_dir,
                 }
+                if self.run_label is not None:
+                    entry["run_label"] = self.run_label
+                if self.model_size is not None:
+                    entry["model_size"] = self.model_size
                 for key, values in sample_metadata.items():
                     if values is not None:
                         entry[key] = values[index]

@@ -16,6 +16,7 @@ trainer:
   enable_checkpointing: false
 
 model:
+  class_path: src.lightning_modules.Qwen3VLModule
   init_args:
     adapter_dir: ${paths.adapter_dir}
     prediction_export_path: ${paths.output_dir}/predictions.jsonl
