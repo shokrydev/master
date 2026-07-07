@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# BigEarthNet.txt Evaluation Export Submission Helper
+# BigEarthNet.txt Evaluation Submission Helper
 # ============================================================================
 # Usage:
 #   ./scripts/submit_evaluation_job.sh --condition loc_text --size 2B --adapter-dir /path/to/adapter
@@ -197,7 +197,7 @@ done
 mkdir -p logs
 
 echo "=============================================="
-echo "BigEarthNet.txt Evaluation Export Submission"
+echo "BigEarthNet.txt Evaluation Submission"
 echo "=============================================="
 echo "Base config: configs/evaluation/bigearthnet_txt.yaml"
 echo "Condition config: ${CONDITION_CONFIG:-<none>}"

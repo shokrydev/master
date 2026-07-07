@@ -7,7 +7,7 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=14
 #SBATCH --mem=128G
-# Single-GPU BigEarthNet.txt prediction export job.
+# Single-GPU BigEarthNet.txt benchmark export and scoring job.
 
 set -e
 
@@ -83,6 +83,7 @@ echo "Condition config: ${CONDITION_CONFIG:-<none>}"
 echo "Output dir: $OUTPUT_DIR"
 echo "Adapter dir: $EVAL_ADAPTER_DIR"
 echo "Prediction export: ${OUTPUT_DIR}/predictions.jsonl"
+echo "Scored output: ${OUTPUT_DIR}/scored_predictions"
 echo "Run label: ${RUN_LABEL:-<none>}"
 echo "Model size: ${MODEL_SIZE:-<none>}"
 echo "Required paths:"
@@ -98,3 +99,7 @@ uv run python main.py test \
     --model.init_args.run_label "$RUN_LABEL" \
     --model.init_args.model_size "$MODEL_SIZE" \
     "$@"
+
+uv run python -m src.evaluation.main score \
+    "${OUTPUT_DIR}/predictions.jsonl" \
+    --output-dir "${OUTPUT_DIR}/scored_predictions"
