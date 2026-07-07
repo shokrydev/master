@@ -31,6 +31,8 @@ dependencies = [
     "rich>=13.0.0",
     # Logging
     "tensorboard>=2.16.0",
+    # Local analysis and figures
+    "matplotlib>=3.8.0",
     # Evaluation
     "torchmetrics>=1.0.0",
     "pycocoevalcap>=1.2",
@@ -75,6 +77,7 @@ packages = ["src"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+extend-exclude = ["src/models/satclip"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "C4", "UP"]

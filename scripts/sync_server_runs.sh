@@ -1,0 +1,272 @@
+#!/bin/bash
+# Sync lightweight Slurm and Lightning evidence for selected server runs.
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage:
+  ./scripts/sync_server_runs.sh \
+    --host USER@HOST \
+    --remote-repo /path/to/repo \
+    --remote-output-root /path/to/finetuning_outputs \
+    --jobs 11270 11271 11272
+
+  ./scripts/sync_server_runs.sh
+
+  ./scripts/sync_server_runs.sh --jobs-from-squeue
+
+The second form reads connection defaults from .env and job ids from
+planning/run_registry.md.
+
+Options:
+  --host HOST                 SSH host, for example mohamed@mars
+  --remote-repo PATH          Repository path on the server, used for logs/
+  --remote-output-root PATH   Server FINETUNING_OUTPUT_ROOT
+  --jobs JOB...               Slurm job ids to sync
+  --jobs-from-squeue          Read active job ids from remote Slurm squeue
+  --jobs-from-registry PATH    Read job ids from a registry, default planning/run_registry.md
+  --dest PATH                 Local destination, default outputs/server_runs
+  --dry-run                   Print rsync commands without copying
+  -h, --help                  Show this help
+
+Environment defaults:
+  SERVER_SYNC_HOST
+  SERVER_REPO_ROOT
+  SERVER_FINETUNING_OUTPUT_ROOT
+
+Copied by default:
+  logs/*_<job>.out
+  logs/*_<job>.err
+  finetuning_outputs/bigearthnet_<job>/lightning_logs/
+  lightweight top-level run files such as *.yaml, *.json, *.jsonl and *.txt
+
+Large adapter/checkpoint files are intentionally excluded.
+EOF
+}
+
+require_arg() {
+    if [ -z "${2:-}" ]; then
+        echo "Missing value for $1"
+        exit 1
+    fi
+}
+
+if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+fi
+
+HOST="${SERVER_SYNC_HOST:-}"
+REMOTE_REPO="${SERVER_REPO_ROOT:-}"
+REMOTE_OUTPUT_ROOT="${SERVER_FINETUNING_OUTPUT_ROOT:-${FINETUNING_OUTPUT_ROOT:-}}"
+DEST="outputs/server_runs"
+DRY_RUN=false
+REGISTRY_PATH="planning/run_registry.md"
+JOBS_FROM_SQUEUE=false
+JOBS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --host)
+            require_arg "$1" "${2:-}"
+            HOST="$2"
+            shift 2
+            ;;
+        --remote-repo)
+            require_arg "$1" "${2:-}"
+            REMOTE_REPO="$2"
+            shift 2
+            ;;
+        --remote-output-root)
+            require_arg "$1" "${2:-}"
+            REMOTE_OUTPUT_ROOT="$2"
+            shift 2
+            ;;
+        --jobs)
+            shift
+            while [[ $# -gt 0 && "$1" != --* ]]; do
+                JOBS+=("$1")
+                shift
+            done
+            ;;
+        --jobs-from-squeue)
+            JOBS_FROM_SQUEUE=true
+            shift
+            ;;
+        --jobs-from-registry)
+            require_arg "$1" "${2:-}"
+            REGISTRY_PATH="$2"
+            shift 2
+            ;;
+        --dest)
+            require_arg "$1" "${2:-}"
+            DEST="$2"
+            shift 2
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+if [ "${#JOBS[@]}" -eq 0 ]; then
+    if [ ! -f "$REGISTRY_PATH" ]; then
+        echo "Missing --jobs and registry file does not exist: $REGISTRY_PATH"
+        usage
+        exit 1
+    fi
+    if [ "$JOBS_FROM_SQUEUE" = false ]; then
+        if [ ! -f "$REGISTRY_PATH" ]; then
+            echo "Missing --jobs and registry file does not exist: $REGISTRY_PATH"
+            usage
+            exit 1
+        fi
+        mapfile -t JOBS < <(grep -oE '`[0-9]{5,}`' "$REGISTRY_PATH" | tr -d '`' | awk '!seen[$0]++')
+        if [ "${#JOBS[@]}" -eq 0 ]; then
+            echo "No job ids found in registry: $REGISTRY_PATH"
+            exit 1
+        fi
+        echo "No --jobs supplied; using ${#JOBS[@]} job ids from $REGISTRY_PATH."
+    fi
+fi
+
+if [ -z "$HOST" ] || [ -z "$REMOTE_REPO" ] || [ -z "$REMOTE_OUTPUT_ROOT" ]; then
+    echo "Missing server connection settings."
+    echo "Pass --host/--remote-repo/--remote-output-root or set SERVER_SYNC_HOST,"
+    echo "SERVER_REPO_ROOT and SERVER_FINETUNING_OUTPUT_ROOT in .env."
+    usage
+    exit 1
+fi
+if [ "$JOBS_FROM_SQUEUE" = true ] && [ "${#JOBS[@]}" -gt 0 ]; then
+    echo "Use either --jobs or --jobs-from-squeue, not both."
+    exit 1
+fi
+if ! command -v rsync >/dev/null 2>&1; then
+    echo "rsync is required."
+    exit 1
+fi
+if ! command -v ssh >/dev/null 2>&1; then
+    echo "ssh is required."
+    exit 1
+fi
+
+REMOTE_REPO="${REMOTE_REPO%/}"
+REMOTE_OUTPUT_ROOT="${REMOTE_OUTPUT_ROOT%/}"
+
+CONTROL_DIR=""
+CONTROL_PATH=""
+SSH_OPTS=()
+RSYNC_SSH="ssh"
+if [ "$DRY_RUN" = false ] || [ "$JOBS_FROM_SQUEUE" = true ]; then
+    CONTROL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/geovlm-sync-ssh.XXXXXX")"
+    CONTROL_PATH="$CONTROL_DIR/control-%r@%h:%p"
+    SSH_OPTS=(
+        -o ControlMaster=auto
+        -o ControlPersist=10m
+        -o "ControlPath=$CONTROL_PATH"
+    )
+    RSYNC_SSH="ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=$CONTROL_PATH"
+    cleanup() {
+        ssh "${SSH_OPTS[@]}" -O exit "$HOST" >/dev/null 2>&1 || true
+        rm -rf "$CONTROL_DIR"
+    }
+    trap cleanup EXIT
+
+    echo "Opening SSH connection to $HOST ..."
+    ssh "${SSH_OPTS[@]}" "$HOST" true
+fi
+
+if [ "$JOBS_FROM_SQUEUE" = true ]; then
+    mapfile -t JOBS < <(ssh "${SSH_OPTS[@]}" "$HOST" "squeue -h -o '%i' -u \"\$USER\"" | awk '!seen[$0]++')
+    if [ "${#JOBS[@]}" -eq 0 ]; then
+        echo "No active Slurm jobs found for the remote user."
+        exit 0
+    fi
+    echo "Using ${#JOBS[@]} active job ids from remote squeue: ${JOBS[*]}"
+fi
+
+remote_dir_exists() {
+    local remote_dir="$1"
+    local quoted
+    if [ "$DRY_RUN" = true ]; then
+        return 0
+    fi
+    quoted=$(printf '%q' "$remote_dir")
+    ssh "${SSH_OPTS[@]}" "$HOST" "test -d $quoted"
+}
+
+run_rsync() {
+    if [ "$DRY_RUN" = true ]; then
+        printf 'Dry run:'
+        printf ' %q' "$@"
+        printf '\n'
+    else
+        "$@"
+    fi
+}
+
+mkdir -p "$DEST"
+
+for JOB in "${JOBS[@]}"; do
+    RUN_DEST="$DEST/$JOB"
+    mkdir -p "$RUN_DEST/logs" "$RUN_DEST/output"
+
+    echo "=============================================="
+    echo "Syncing run $JOB"
+    echo "Destination: $RUN_DEST"
+
+    REMOTE_LOGS_DIR="$REMOTE_REPO/logs"
+    if remote_dir_exists "$REMOTE_LOGS_DIR"; then
+        run_rsync \
+            rsync -av --prune-empty-dirs \
+            -e "$RSYNC_SSH" \
+            --include="*/" \
+            --include="*_${JOB}.out" \
+            --include="*_${JOB}.err" \
+            --exclude="*" \
+            "$HOST:$REMOTE_LOGS_DIR/" \
+            "$RUN_DEST/logs/"
+    else
+        echo "Warning: remote logs directory not found: $REMOTE_LOGS_DIR"
+    fi
+
+    REMOTE_RUN_DIR="$REMOTE_OUTPUT_ROOT/bigearthnet_$JOB"
+    if remote_dir_exists "$REMOTE_RUN_DIR"; then
+        run_rsync \
+            rsync -av --prune-empty-dirs \
+            -e "$RSYNC_SSH" \
+            --exclude="qlora_adapter/***" \
+            --exclude="qlora_adapter_best_val/***" \
+            --exclude="*.safetensors" \
+            --exclude="*.bin" \
+            --exclude="*.pt" \
+            --exclude="*.ckpt" \
+            --include="lightning_logs/***" \
+            --include="*/" \
+            --include="*.jsonl" \
+            --include="*.json" \
+            --include="*.yaml" \
+            --include="*.yml" \
+            --include="*.txt" \
+            --exclude="*" \
+            "$HOST:$REMOTE_RUN_DIR/" \
+            "$RUN_DEST/output/"
+    else
+        echo "Warning: remote output directory not found: $REMOTE_RUN_DIR"
+    fi
+done
+
+echo "Done."
