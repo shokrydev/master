@@ -24,11 +24,16 @@ configs/finetuning/
   loc_embed.yaml                # SatCLIP-token location conditioning
   gaia_finetuning_shared.yaml   # optional GAIA configuration
 
+configs/evaluation/
+  bigearthnet_txt.yaml          # BEN.txt benchmark prediction export config
+
 scripts/
   download_artifacts.py         # Qwen, SatCLIP and BigEarthNet encoder artifacts
   submit_smoke_job.sh           # short Slurm validation helper
   submit_finetuning_job.sh      # full BEN.txt Slurm submission helper
   finetune_job.sbatch           # single-GPU BEN.txt Slurm job
+  submit_evaluation_job.sh      # BEN.txt benchmark export submission helper
+  evaluate_job.sbatch           # single-GPU BEN.txt benchmark export job
 
 src/data_modules/
   ben_txt_datamodule.py         # BigEarthNet.txt loader
@@ -43,6 +48,12 @@ src/models/
   non_rgb_modality_projection.py
   location_modality_projection.py
   satclip/
+
+src/evaluation/
+  bentxt_records.py             # exported prediction schema loading
+  bentxt_parsing.py             # strict BEN.txt answer parsers
+  bentxt_scoring.py             # metrics and stratified score tables
+  main.py                       # offline scoring CLI
 ```
 
 ## Environment
@@ -188,6 +199,19 @@ Each Slurm job derives its own output paths:
 ```text
 ${FINETUNING_OUTPUT_ROOT}bigearthnet_$SLURM_JOB_ID
 ${FINETUNING_OUTPUT_ROOT}bigearthnet_$SLURM_JOB_ID/qlora_adapter
+```
+
+## Benchmark Evaluation
+
+Final BigEarthNet.txt evaluation is split into GPU prediction export and
+offline benchmark scoring. The Slurm evaluation job uses `main.py test` to load
+the trained adapter, write `predictions.jsonl` on the `bench` split, and run
+the offline scorer to produce metric tables:
+
+```bash
+python -m src.evaluation.main score \
+  /absolute/path/to/predictions.jsonl \
+  --output-dir /absolute/path/to/scored_predictions
 ```
 
 ## Direct Local Command
