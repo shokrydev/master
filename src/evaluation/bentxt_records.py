@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 TaskType = Literal["binary", "mcq", "captioning", "bounding box"]
 
@@ -62,10 +62,11 @@ def prediction_from_json(raw: dict[str, Any], *, line_number: int | None = None)
         missing_text = ", ".join(sorted(missing))
         raise ValueError(f"{prefix}prediction record missing required fields: {missing_text}")
 
-    task_type = str(raw["task_type"])
-    if task_type not in {"binary", "mcq", "captioning", "bounding box"}:
+    task_type_text = str(raw["task_type"])
+    if task_type_text not in {"binary", "mcq", "captioning", "bounding box"}:
         prefix = f"line {line_number}: " if line_number is not None else ""
-        raise ValueError(f"{prefix}unsupported task_type: {task_type!r}")
+        raise ValueError(f"{prefix}unsupported task_type: {task_type_text!r}")
+    task_type = cast(TaskType, task_type_text)
 
     target_texts = raw["target_texts"]
     if isinstance(target_texts, str):
@@ -84,7 +85,7 @@ def prediction_from_json(raw: dict[str, Any], *, line_number: int | None = None)
         target_texts=target_texts_tuple,
         sample_id=str(raw["sample_id"]),
         patch_id=str(raw["patch_id"]),
-        task_type=task_type,  # type: ignore[arg-type]
+        task_type=task_type,
         task_category=str(raw["task_category"]),
         split=str(raw["split"]),
         input_text=_optional_str(raw, "input_text"),

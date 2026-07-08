@@ -110,6 +110,14 @@ class TestBENTxTScoring(unittest.TestCase):
         self.assertIn("by_task_category", summary)
         self.assertIn("by_country", summary)
 
+    def test_summary_requires_task_type_grouping(self) -> None:
+        scores = score_predictions(
+            [_prediction(prediction="yes", target="yes", task_type="binary")]
+        )
+
+        with self.assertRaisesRegex(ValueError, "task_type"):
+            summarize_scores(scores, group_by=("country",))
+
     def test_score_prediction_keeps_caption_rows_parse_neutral(self) -> None:
         score = score_prediction(
             _prediction(

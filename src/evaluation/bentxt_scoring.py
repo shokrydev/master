@@ -228,6 +228,8 @@ def summarize_scores(
     unknown = [field for field in group_by if field not in STRATIFICATION_FIELDS]
     if unknown:
         raise ValueError(f"Unsupported stratification field(s): {unknown}")
+    if "task_type" not in group_by:
+        raise ValueError("BEN.txt score summaries must include 'task_type'")
 
     grouped: dict[tuple[str, ...], list[SampleScore]] = defaultdict(list)
     for score in scores:
