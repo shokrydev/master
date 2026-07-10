@@ -22,7 +22,7 @@ model:
       - "8457166"  # mcq / season
       - "5513687"  # bounding box / point
       - "5820049"  # bounding box / reference
-    validation_trace_path: ${paths.output_dir}/validation_generation_trace.jsonl
+    validation_trace_path: ${oc.env:FINETUNING_OUTPUT_DIR,./outputs}/validation_generation_trace.jsonl
 
 data:
   init_args:
