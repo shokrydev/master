@@ -178,15 +178,12 @@ REQUIRED_ENV_VARS=(
     BIGEARTHNET_V2_LMDB_ROOT
     BIGEARTHNET_TXT_PARQUET_PATH
     BIGEARTHNET_ENCODER_DIR
+    EVALUATION_OUTPUT_ROOT
     HF_HOME
 )
 if [ "$CONDITION" = "loc_embed" ]; then
     REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
 fi
-if [ -z "${EVALUATION_OUTPUT_ROOT:-}" ] && [ -z "${FINETUNING_OUTPUT_ROOT:-}" ]; then
-    REQUIRED_ENV_VARS+=(FINETUNING_OUTPUT_ROOT)
-fi
-
 MISSING_ENV_VARS=()
 for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
     if [ -z "${!VAR_NAME:-}" ]; then
@@ -212,7 +209,7 @@ echo "Slurm partition: $PARTITION"
 echo "Slurm time limit: ${TIME_LIMIT:-<partition default>}"
 echo "Slurm memory: ${MEMORY:-<sbatch default>}"
 echo "Slurm CPUs per task: ${CPUS:-<sbatch default>}"
-echo "Evaluation output root: ${EVALUATION_OUTPUT_ROOT:-${FINETUNING_OUTPUT_ROOT%/}/evaluation_outputs}"
+echo "Evaluation output root: $EVALUATION_OUTPUT_ROOT"
 echo "Required paths:"
 for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
     VALUE="${!VAR_NAME:-<missing>}"
