@@ -9,8 +9,8 @@ from pathlib import Path
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
-DEFAULT_RUNS_ROOT = Path("outputs/server_runs")
-DEFAULT_OUTPUT = Path("outputs/analysis/training_curves.csv")
+DEFAULT_RUNS_ROOT = Path("outputs/finetuning")
+DEFAULT_OUTPUT = Path("notebooks/analysis/training_curves.csv")
 
 
 def _job_id_from_path(path: Path) -> str:
@@ -24,9 +24,9 @@ def _job_id_from_path(path: Path) -> str:
 
 
 def _run_label_from_logs(run_dir: Path, job_id: str) -> str:
-    if not run_dir.exists():
-        return job_id
     log_dir = run_dir / "logs"
+    if not log_dir.exists():
+        return job_id
     for log_path in sorted(log_dir.glob(f"*_{job_id}.out")):
         return log_path.name.removesuffix(f"_{job_id}.out")
     return job_id
@@ -45,39 +45,30 @@ def _model_size_from_label(label: str) -> str:
 
 
 def _event_files_for_run(run_dir: Path) -> list[Path]:
-    return sorted((run_dir / "output" / "lightning_logs").glob("version_*/events.out.tfevents.*"))
+    return sorted((run_dir / "lightning_logs").glob("version_*/events.out.tfevents.*"))
 
 
 def discover_event_files(
     runs_root: Path,
     jobs: set[str] | None,
-    legacy_lightning_root: Path | None,
-) -> list[Path]:
-    event_files: list[Path] = []
+) -> list[tuple[Path, Path]]:
+    event_files: list[tuple[Path, Path]] = []
 
     if runs_root.exists():
         for run_dir in sorted(p for p in runs_root.iterdir() if p.is_dir()):
             if jobs is not None and run_dir.name not in jobs:
                 continue
-            event_files.extend(_event_files_for_run(run_dir))
-
-    if legacy_lightning_root and legacy_lightning_root.exists():
-        for event_path in sorted(legacy_lightning_root.glob("version_*/events.out.tfevents.*")):
-            job_id = _job_id_from_path(event_path)
-            if jobs is not None and job_id not in jobs:
-                continue
-            event_files.append(event_path)
+            event_files.extend((run_dir, event_path) for event_path in _event_files_for_run(run_dir))
 
     return event_files
 
 
 def extract_event_file(
+    run_dir: Path,
     event_path: Path,
-    runs_root: Path,
     tags: set[str] | None,
 ) -> list[dict[str, str | int | float]]:
     job_id = _job_id_from_path(event_path)
-    run_dir = runs_root / job_id if job_id else Path()
     run_label = _run_label_from_logs(run_dir, job_id)
     condition = _condition_from_label(run_label)
     model_size = _model_size_from_label(run_label)
@@ -126,38 +117,21 @@ def write_rows(rows: list[dict[str, str | int | float]], output_path: Path) -> N
         writer.writerows(rows)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runs-root", type=Path, default=DEFAULT_RUNS_ROOT)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--jobs", nargs="*", help="Optional job ids to include.")
-    parser.add_argument(
-        "--tags",
-        nargs="*",
-        help="Optional scalar tags to include, for example train/loss val/loss.",
-    )
-    parser.add_argument(
-        "--legacy-lightning-root",
-        type=Path,
-        default=Path("outputs/lightning_logs"),
-        help="Optional older local layout containing version_<job>/ event files.",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    jobs = set(args.jobs) if args.jobs else None
-    tags = set(args.tags) if args.tags else None
-
-    event_files = discover_event_files(args.runs_root, jobs, args.legacy_lightning_root)
+def extract_training_curves(
+    runs_root: Path = DEFAULT_RUNS_ROOT,
+    output: Path = DEFAULT_OUTPUT,
+    jobs: set[str] | None = None,
+    tags: set[str] | None = None,
+) -> list[dict[str, str | int | float]]:
+    """Extract scalar rows from synced server runs and write them to CSV."""
+    event_files = discover_event_files(runs_root, jobs)
     if not event_files:
-        raise SystemExit("No TensorBoard event files found.")
+        raise FileNotFoundError(f"No TensorBoard event files found under {runs_root}")
 
     rows: list[dict[str, str | int | float]] = []
     seen: set[tuple[str, str, int, float, str]] = set()
-    for event_path in event_files:
-        for row in extract_event_file(event_path, args.runs_root, tags):
+    for run_dir, event_path in event_files:
+        for row in extract_event_file(run_dir, event_path, tags):
             key = (
                 str(row["job_id"]),
                 str(row["tag"]),
@@ -171,7 +145,34 @@ def main() -> None:
             rows.append(row)
 
     rows.sort(key=lambda row: (str(row["job_id"]), str(row["tag"]), int(row["step"])))
-    write_rows(rows, args.output)
+    write_rows(rows, output)
+    return rows
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--runs-root", type=Path, default=DEFAULT_RUNS_ROOT)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--jobs", nargs="*", help="Optional job ids to include.")
+    parser.add_argument(
+        "--tags",
+        nargs="*",
+        help="Optional scalar tags to include, for example train/loss val/loss.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    jobs = set(args.jobs) if args.jobs else None
+    tags = set(args.tags) if args.tags else None
+
+    rows = extract_training_curves(
+        runs_root=args.runs_root,
+        output=args.output,
+        jobs=jobs,
+        tags=tags,
+    )
     print(f"Wrote {len(rows)} scalar rows to {args.output}")
 
 

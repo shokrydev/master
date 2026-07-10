@@ -1,1 +1,1 @@
-"""Utilities for local experiment-analysis notebooks."""
+"""Reusable local analysis helpers for notebooks."""

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 
-DEFAULT_CURVES = Path("outputs/analysis/training_curves.csv")
-DEFAULT_OUTPUT = Path("outputs/analysis/figures/training_curve.png")
+DEFAULT_CURVES = Path("notebooks/analysis/training_curves.csv")
+DEFAULT_OUTPUT = Path("notebooks/analysis/figures/training_curve.png")
 
 CONDITION_ORDER = {"no_loc": 0, "loc_text": 1, "loc_embed": 2}
 CONDITION_COLORS = {
