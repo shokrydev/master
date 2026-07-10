@@ -69,6 +69,7 @@ class GeoAwareCollator:
         system_prompt: str | None = None,
         location_text_template: str | None = None,
         coordinates_decimal_places: int = 0,
+        generation_prompt: bool = False,
     ):
         if coordinates_decimal_places < 0:
             raise ValueError("coordinates_decimal_places must be non-negative")
@@ -76,24 +77,33 @@ class GeoAwareCollator:
         self.system_prompt = system_prompt
         self.location_text_template = location_text_template
         self.coordinates_decimal_places = coordinates_decimal_places
+        self.generation_prompt = generation_prompt
 
-    def _to_messages(self, image: Any, input_text: str, target_text: str) -> list[dict[str, Any]]:
+    def _to_messages(
+        self,
+        image: Any,
+        input_text: str,
+        target_text: str | None = None,
+    ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
-        messages.extend([
+        messages.append(
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": input_text},
                     {"type": "image", "image": image},
                 ],
-            },
-            {
-                "role": "assistant",
-                "content": [{"type": "text", "text": target_text}],
-            },
-        ])
+            }
+        )
+        if target_text is not None:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": target_text}],
+                }
+            )
         return messages
 
     def _with_location_text(self, input_text: str, lat: float, lon: float) -> str:
@@ -107,6 +117,41 @@ class GeoAwareCollator:
             )
         )
         return f"{input_text}\n{location_text}"
+
+    def _collate_generation_prompts(self, examples: list[dict[str, Any]]) -> dict[str, Any]:
+        """Tokenize prompt-only messages with Qwen's assistant generation prefix."""
+        processor = self.inner_collator.processor
+        texts = []
+        images = []
+        for example in examples:
+            messages = example["messages"]
+            texts.append(
+                processor.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            )
+            image, video, _ = self.inner_collator._extract_images_videos_for_example(
+                example,
+                messages,
+            )
+            if video:
+                raise ValueError("GeoAwareCollator does not support video generation prompts")
+            images.append(self.inner_collator._resize_images_inplace(image))
+
+        batch = processor(
+            text=texts,
+            images=images,
+            padding=True,
+            truncation=self.inner_collator.truncation,
+            max_length=self.inner_collator.max_seq_length,
+            return_tensors="pt",
+            add_special_tokens=False,
+        )
+        if "pixel_values" in batch:
+            batch = self.inner_collator._cast_pixel_values_dtype_inplace(batch)
+        return batch
 
     def __call__(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         # Convert normalized samples to the message format expected by Unsloth.
@@ -166,10 +211,18 @@ class GeoAwareCollator:
                 non_rgb_images.append(non_rgb_image)
                 non_rgb_bands.append(item.get("non_rgb_bands"))
 
-            cleaned.append({"messages": self._to_messages(image, input_text, targets[0])})
+            messages = self._to_messages(
+                image,
+                input_text,
+                None if self.generation_prompt else targets[0],
+            )
+            cleaned.append({"messages": messages})
 
         # Inner collation (input_ids, attention_mask, labels, pixel_values, ...)
-        batch = self.inner_collator(cleaned)
+        if self.generation_prompt:
+            batch = self._collate_generation_prompts(cleaned)
+        else:
+            batch = self.inner_collator(cleaned)
 
         # Re-attach geo tensors and sample metadata for conditioning/evaluation.
         batch["lat"] = torch.tensor(lats, dtype=torch.float64)

@@ -190,6 +190,53 @@ class TestGeoAwareCollator(unittest.TestCase):
             "Scene coordinates:",
         )
 
+    def test_generation_prompt_omits_target_and_uses_prompt_completion_format(self) -> None:
+        captured = {}
+
+        class FakeProcessor:
+            def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+                captured["messages"] = messages
+                captured["add_generation_prompt"] = add_generation_prompt
+                return "generation prompt"
+
+            def __call__(self, **kwargs):
+                captured["processor_kwargs"] = kwargs
+                return {"input_ids": torch.tensor([[1, 2, 3]])}
+
+        class FakeInnerCollator:
+            processor = FakeProcessor()
+            truncation = True
+            max_seq_length = 2048
+
+            @staticmethod
+            def _extract_images_videos_for_example(example, messages):
+                return [object()], [], None
+
+            @staticmethod
+            def _resize_images_inplace(images):
+                return images
+
+            @staticmethod
+            def _cast_pixel_values_dtype_inplace(batch):
+                return batch
+
+        collator = GeoAwareCollator(FakeInnerCollator(), generation_prompt=True)
+        collator(
+            [
+                {
+                    "image": object(),
+                    "input_text": "Which land cover classes are present?",
+                    "target_texts": ["Urban fabric"],
+                    "lat": 52.0,
+                    "lon": 13.0,
+                }
+            ]
+        )
+
+        self.assertTrue(captured["add_generation_prompt"])
+        self.assertEqual([message["role"] for message in captured["messages"]], ["user"])
+        self.assertEqual(captured["processor_kwargs"]["text"], ["generation prompt"])
+
     def test_re_attaches_non_rgb_tensor_without_sending_it_to_unsloth(self) -> None:
         captured = {}
 

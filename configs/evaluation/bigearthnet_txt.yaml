@@ -20,6 +20,8 @@ model:
   init_args:
     adapter_dir: ${paths.adapter_dir}
     prediction_export_path: ${paths.output_dir}/predictions.jsonl
+    # Generation stops at EOS; this cap accommodates the longer BEN.txt captions.
+    max_new_tokens: 512
     non_rgb_conditioning: enabled
     non_rgb_encoder_dir: ${paths.bigearthnet_encoder_dir}
     non_rgb_encoder_feature_dim: null

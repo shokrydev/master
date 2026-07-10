@@ -215,6 +215,30 @@ class InsertTokenHelpersTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "single-process"):
             module.on_test_start()
 
+    def test_prediction_export_generates_without_teacher_forced_forward(self):
+        module = object.__new__(Qwen3VLModule)
+        module.prediction_export_path = "predictions.jsonl"
+        module.max_new_tokens = 32
+        module._prepare_model_inputs = lambda batch: (
+            {"input_ids": torch.tensor([[1, 2, 3]])},
+            [["reference"]],
+            torch.tensor([48.0]),
+            torch.tensor([12.0]),
+            {},
+            {"sample_id": ["row-a"]},
+        )
+        module._generate_for_batch = lambda batch: ["generated answer"]
+        module._print = lambda *args, **kwargs: None
+        module._reset_projected_token_state = lambda: None
+        exported = {}
+        module._write_prediction_export = lambda **kwargs: exported.update(kwargs)
+
+        result = module.test_step({}, batch_idx=0)
+
+        self.assertEqual(result, {"generated": "generated answer"})
+        self.assertEqual(exported["predictions"], ["generated answer"])
+        self.assertEqual(exported["target_texts"], [["reference"]])
+
     def test_insert_tokens_2d_preserves_order_and_positions(self):
         tensor = torch.tensor([[1, 2, 3, 4], [10, 11, 12, 13]])
         insert = torch.tensor([[90, 91], [80, 81]])

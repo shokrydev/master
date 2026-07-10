@@ -249,6 +249,7 @@ class Qwen3VLModule(L.LightningModule):
         self.model = None
         self.tokenizer = None
         self._collator = None
+        self._test_collator = None
 
         # Projected side-modality components, initialized in setup when enabled.
         self.satclip = None
@@ -347,6 +348,14 @@ class Qwen3VLModule(L.LightningModule):
             location_text_template=location_prompt_template,
             coordinates_decimal_places=self.coordinates_decimal_places,
         )
+        if self.prediction_export_path:
+            self._test_collator = GeoAwareCollator(
+                base_collator,
+                system_prompt=self.system_prompt,
+                location_text_template=location_prompt_template,
+                coordinates_decimal_places=self.coordinates_decimal_places,
+                generation_prompt=True,
+            )
         self._set_datamodule_collator()
 
         # Set up loc_embed components
@@ -724,13 +733,15 @@ class Qwen3VLModule(L.LightningModule):
         self._non_rgb_insertion_state = None
 
     def _set_datamodule_collator(self):
-        """Attach the collator to the active datamodule once it exists."""
+        """Attach supervised and optional generation collators to the active datamodule."""
         if self._collator is None:
             return
         trainer = self._trainer_or_none()
         datamodule = getattr(trainer, "datamodule", None) if trainer is not None else None
         if datamodule is not None and hasattr(datamodule, "set_collator"):
             datamodule.set_collator(self._collator)
+        if datamodule is not None and hasattr(datamodule, "set_test_collator"):
+            datamodule.set_test_collator(self._test_collator)
 
     def forward(self, **inputs) -> Any:
         """Forward pass through the model."""
@@ -923,21 +934,9 @@ class Qwen3VLModule(L.LightningModule):
     def test_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
         """Test step with loss logging and optional raw prediction export."""
         batch, target_texts, lat, lon, _, sample_metadata = self._prepare_model_inputs(batch)
-        batch_size = batch["input_ids"].shape[0]
-        with torch.no_grad():
-            outputs = self.model(**batch)
-
-        self.log(
-            "test/loss",
-            outputs.loss,
-            on_step=False,
-            on_epoch=True,
-            sync_dist=True,
-            batch_size=batch_size,
-        )
-        result = {"loss": outputs.loss}
-
-        if self.max_new_tokens > 0:
+        if self.prediction_export_path:
+            if self.max_new_tokens <= 0:
+                raise ValueError("prediction_export_path requires max_new_tokens to be positive")
             predictions = self._generate_for_batch(batch)
 
             if batch_idx == 0 and predictions:
@@ -950,8 +949,20 @@ class Qwen3VLModule(L.LightningModule):
                 lon=lon,
                 sample_metadata=sample_metadata,
             )
-
-            result["generated"] = predictions[0] if predictions else ""
+            result = {"generated": predictions[0] if predictions else ""}
+        else:
+            batch_size = batch["input_ids"].shape[0]
+            with torch.no_grad():
+                outputs = self.model(**batch)
+            self.log(
+                "test/loss",
+                outputs.loss,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=batch_size,
+            )
+            result = {"loss": outputs.loss}
 
         self._reset_projected_token_state()
         return result

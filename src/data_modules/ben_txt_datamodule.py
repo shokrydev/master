@@ -761,6 +761,7 @@ class BENTxTDataModule(pl.LightningDataModule):
         self.validation_subset_seed = validation_subset_seed
         self.test_splits = test_splits
         self._collator: Callable | None = None
+        self._test_collator: Callable | None = None
         self.train_ds: Dataset | None = None
         self.val_ds: Dataset | None = None
         self.test_ds: Dataset | None = None
@@ -811,6 +812,10 @@ class BENTxTDataModule(pl.LightningDataModule):
     def set_collator(self, collator: Callable) -> None:
         self._collator = collator
 
+    def set_test_collator(self, collator: Callable | None) -> None:
+        """Set an optional prompt-only collator for benchmark generation."""
+        self._test_collator = collator
+
     def setup(self, stage: str | None = None) -> None:
         """
         Create training, validation, or selected evaluation datasets.
@@ -846,10 +851,16 @@ class BENTxTDataModule(pl.LightningDataModule):
                 transform=self.eval_transforms
             )
 
-    def _create_dataloader(self, dataset, *, shuffle: bool) -> DataLoader:
+    def _create_dataloader(
+        self,
+        dataset,
+        *,
+        shuffle: bool,
+        collator: Callable | None = None,
+    ) -> DataLoader:
         if dataset is None:
             raise RuntimeError("Dataset is not initialized; call setup for this stage first")
-        collate_fn = self._collator if self._collator is not None else collate_normalized
+        collate_fn = collator or self._collator or collate_normalized
         return DataLoader(
             dataset,
             batch_size=self.batch_size,
@@ -869,4 +880,8 @@ class BENTxTDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         """Create the DataLoader for the configured test split or splits."""
-        return self._create_dataloader(self.test_ds, shuffle=False)
+        return self._create_dataloader(
+            self.test_ds,
+            shuffle=False,
+            collator=self._test_collator,
+        )
