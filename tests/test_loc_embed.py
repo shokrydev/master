@@ -188,14 +188,6 @@ class InsertTokenHelpersTest(unittest.TestCase):
             self.assertEqual(records[0]["climate_zone"], "Cfb")
             self.assertEqual(module._prediction_export_count, 2)
 
-    def test_prediction_export_rejects_distributed_test(self):
-        module = object.__new__(Qwen3VLModule)
-        module.prediction_export_path = "predictions.jsonl"
-        module._trainer_or_none = lambda: types.SimpleNamespace(world_size=2, is_global_zero=True)
-
-        with self.assertRaisesRegex(ValueError, "single-process"):
-            module.on_test_start()
-
     def test_prediction_export_generates_without_teacher_forced_forward(self):
         module = object.__new__(Qwen3VLModule)
         module.prediction_export_path = "predictions.jsonl"
@@ -483,6 +475,9 @@ class PrepareModelInputsTest(unittest.TestCase):
                 [[101, 102, 997, 999, 999, 201], [301, 997, 999, 302, 303, 304]]
             ),
             "attention_mask": torch.ones(2, 6, dtype=torch.long),
+            "mm_token_type_ids": torch.tensor(
+                [[0, 0, 0, 1, 1, 0], [0, 0, 1, 0, 0, 0]]
+            ),
             "labels": torch.tensor(
                 [[11, 12, 13, 14, 15, 16], [21, 22, 23, 24, 25, 26]]
             ),
@@ -521,6 +516,17 @@ class PrepareModelInputsTest(unittest.TestCase):
             )
         )
         self.assertTrue(torch.equal(model_batch["attention_mask"], torch.ones(2, 8, dtype=torch.long)))
+        self.assertTrue(
+            torch.equal(
+                model_batch["mm_token_type_ids"],
+                torch.tensor(
+                    [
+                        [0, 0, 0, 0, 0, 1, 1, 0],
+                        [0, 0, 0, 0, 1, 0, 0, 0],
+                    ]
+                ),
+            )
+        )
         self.assertEqual(module._location_insertion_state["insert_positions"].tolist(), [2, 1])
         self.assertEqual(target_texts, [["a"], ["b"]])
         self.assertTrue(torch.equal(lat, torch.tensor([52.5, -33.9], dtype=torch.float64)))
@@ -615,6 +621,7 @@ class PrepareModelInputsTest(unittest.TestCase):
         batch = {
             "input_ids": torch.tensor([[101, 997, 999, 201]]),
             "attention_mask": torch.tensor([[1, 1, 1, 1]]),
+            "mm_token_type_ids": torch.tensor([[0, 0, 1, 0]]),
             "labels": torch.tensor([[11, 12, 13, 14]]),
             "non_rgb_imagery": imagery,
             "non_rgb_bands": ["VV", "VH"],
@@ -630,6 +637,12 @@ class PrepareModelInputsTest(unittest.TestCase):
                 torch.tensor([[101, 0, 0, 997, 999, 201]]),
             )
         )
+        self.assertTrue(
+            torch.equal(
+                model_batch["mm_token_type_ids"],
+                torch.tensor([[0, 0, 0, 0, 1, 0]]),
+            )
+        )
         self.assertNotIn("non_rgb_imagery", model_batch)
         self.assertNotIn("non_rgb_bands", model_batch)
         self.assertTrue(torch.equal(non_rgb_imagery["tensor"], imagery))
@@ -638,6 +651,35 @@ class PrepareModelInputsTest(unittest.TestCase):
         self.assertEqual(module._non_rgb_insertion_state["bands"], ["VV", "VH"])
         self.assertEqual(module._non_rgb_insertion_state["insert_positions"].tolist(), [1])
         self.assertIsNone(module._location_insertion_state)
+
+    def test_prepare_model_inputs_aligns_combined_projected_token_metadata(self):
+        module = _build_encoder_test_module(num_location_tokens=8)
+        module.non_rgb_conditioning = "enabled"
+        module.num_non_rgb_tokens = 16
+        imagery = torch.ones(1, 12, 2, 2)
+        batch = {
+            "input_ids": torch.tensor([[101, 997, 999, 201]]),
+            "attention_mask": torch.ones(1, 4, dtype=torch.long),
+            "mm_token_type_ids": torch.tensor([[0, 0, 1, 0]]),
+            "labels": torch.tensor([[11, 12, 13, 14]]),
+            "lat": torch.tensor([48.0], dtype=torch.float64),
+            "lon": torch.tensor([12.0], dtype=torch.float64),
+            "non_rgb_imagery": imagery,
+            "non_rgb_bands": ["VV", "VH"],
+        }
+
+        model_batch, _, _, _, _, _ = module._prepare_model_inputs(batch)
+
+        self.assertEqual(model_batch["input_ids"].shape[1], 28)
+        self.assertEqual(model_batch["attention_mask"].shape[1], 28)
+        self.assertEqual(model_batch["mm_token_type_ids"].shape[1], 28)
+        self.assertEqual(model_batch["labels"].shape[1], 28)
+        self.assertTrue(
+            torch.equal(
+                model_batch["mm_token_type_ids"][0, 1:25],
+                torch.zeros(24, dtype=torch.long),
+            )
+        )
 
     def test_prepare_model_inputs_rejects_missing_enabled_non_rgb_imagery(self):
         module = object.__new__(Qwen3VLModule)

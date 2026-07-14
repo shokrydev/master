@@ -741,6 +741,24 @@ class Qwen3VLModule(L.LightningModule):
                 batch["attention_mask"] = self._insert_tokens_2d(
                     batch["attention_mask"], attended, insert_positions
                 )
+            if "mm_token_type_ids" in batch:
+                text_token_types = torch.zeros(
+                    batch_size,
+                    num_inserted_tokens,
+                    device=batch["mm_token_type_ids"].device,
+                    dtype=batch["mm_token_type_ids"].dtype,
+                )
+                batch["mm_token_type_ids"] = self._insert_tokens_2d(
+                    batch["mm_token_type_ids"], text_token_types, insert_positions
+                )
+
+            sequence_length = batch["input_ids"].shape[1]
+            for key in ("attention_mask", "labels", "mm_token_type_ids"):
+                if key in batch and batch[key].shape[-1] != sequence_length:
+                    raise ValueError(
+                        f"{key} length {batch[key].shape[-1]} does not match "
+                        f"input_ids length {sequence_length} after projected-token insertion"
+                    )
 
         return batch, target_texts, lat, lon, non_rgb_imagery, sample_metadata
 
@@ -867,7 +885,6 @@ class Qwen3VLModule(L.LightningModule):
             on_step=False,
             on_epoch=True,
             prog_bar=True,
-            sync_dist=True,
             batch_size=batch_size,
         )
         self._reset_projected_token_state()
@@ -928,11 +945,6 @@ class Qwen3VLModule(L.LightningModule):
         """Initialize streaming prediction export."""
         if not self.prediction_export_path:
             return
-        trainer = self._trainer_or_none()
-        if trainer is not None and getattr(trainer, "world_size", 1) != 1:
-            raise ValueError("prediction_export_path currently supports single-process evaluation only")
-        if trainer is not None and not trainer.is_global_zero:
-            return
         output_path = Path(self.prediction_export_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("", encoding="utf-8")
@@ -966,7 +978,6 @@ class Qwen3VLModule(L.LightningModule):
                 outputs.loss,
                 on_step=False,
                 on_epoch=True,
-                sync_dist=True,
                 batch_size=batch_size,
             )
             result = {"loss": outputs.loss}
