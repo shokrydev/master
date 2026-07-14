@@ -51,8 +51,6 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.3.0",
-    "mypy>=1.9.0",
-    "pre-commit>=3.6.0",
 ]
 wandb = [
     "wandb>=0.16.0",
@@ -85,12 +83,6 @@ ignore = ["E501", "B008"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["src"]
-
-[tool.mypy]
-python_version = "3.12"
-warn_return_any = true
-warn_unused_configs = true
-ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

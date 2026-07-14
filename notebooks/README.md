@@ -13,6 +13,12 @@ Synced server evidence is grouped by run type and Slurm job id:
 
 Large adapter/checkpoint files are intentionally not synced.
 
+Available notebooks:
+
+- `training_curves.ipynb`: compares synced TensorBoard loss curves.
+- `evaluation_scores.ipynb`: compares the server-produced task and caption
+  score summaries for selected evaluation jobs.
+
 Typical workflow:
 
 ```bash

@@ -70,7 +70,7 @@ def plot_scalar(
 
     fig, ax = plt.subplots(figsize=(8, 4.8))
     for (condition, job_id, run_label), group in _sorted_groups(plot_df):
-        label = run_label if run_label and run_label != job_id else f"{condition or job_id}"
+        label = str(condition) if condition else (run_label or str(job_id))
         color = CONDITION_COLORS.get(str(condition), None)
         ax.plot(group["step"], group["value"], marker="o", markersize=3, linewidth=1.8, label=label, color=color)
 
