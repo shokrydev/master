@@ -214,6 +214,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
 
     def test_validation_generation_uses_separate_prompt_only_batch(self):
         module = object.__new__(Qwen3VLModule)
+        module.device = torch.device("meta")
         prepared_batches = []
 
         def prepare(batch):
@@ -251,12 +252,17 @@ class InsertTokenHelpersTest(unittest.TestCase):
         result = module.validation_step(
             {
                 "supervised": True,
-                "validation_generation_batch": {"prompt_only": True},
+                "validation_generation_batch": {
+                    "prompt_only": True,
+                    "input_ids": torch.tensor([[4, 5, 6]]),
+                },
             },
             batch_idx=7,
         )
 
-        self.assertEqual(prepared_batches, [{"supervised": True}, {"prompt_only": True}])
+        self.assertEqual(prepared_batches[0], {"supervised": True})
+        self.assertTrue(prepared_batches[1]["prompt_only"])
+        self.assertEqual(prepared_batches[1]["input_ids"].device.type, "meta")
         self.assertEqual(written["predictions"], ["generated answer"])
         self.assertEqual(written["target_texts"], [["reference"]])
         self.assertEqual(written["sample_metadata"], {"sample_id": ["selected"]})

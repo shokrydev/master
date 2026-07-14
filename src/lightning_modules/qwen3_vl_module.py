@@ -890,6 +890,10 @@ class Qwen3VLModule(L.LightningModule):
         self._reset_projected_token_state()
 
         if generation_batch is not None:
+            generation_batch = {
+                key: value.to(self.device) if isinstance(value, torch.Tensor) else value
+                for key, value in generation_batch.items()
+            }
             generation_batch, target_texts, lat, lon, _, sample_metadata = (
                 self._prepare_model_inputs(generation_batch)
             )
