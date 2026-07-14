@@ -82,7 +82,6 @@ def _install_qwen3_test_stubs():
 _install_qwen3_test_stubs()
 qwen3_module = importlib.import_module("src.lightning_modules.qwen3_vl_module")
 Qwen3VLModule = qwen3_module.Qwen3VLModule
-_slice_batch_indices = qwen3_module._slice_batch_indices
 
 def _build_encoder_test_module(num_location_tokens: int = 2):
     module = object.__new__(Qwen3VLModule)
@@ -91,8 +90,14 @@ def _build_encoder_test_module(num_location_tokens: int = 2):
     module.num_location_tokens = num_location_tokens
     module.device = torch.device("cpu")
     module._location_insertion_state = None
+    module._non_rgb_insertion_state = None
+    module.tokenizer = types.SimpleNamespace(pad_token_id=0)
 
-    config = types.SimpleNamespace(image_token_id=999, video_token_id=998)
+    config = types.SimpleNamespace(
+        image_token_id=999,
+        video_token_id=998,
+        vision_start_token_id=997,
+    )
     language_model = types.SimpleNamespace()
     qwen_model = types.SimpleNamespace(config=config, language_model=language_model)
     wrapper = types.SimpleNamespace(model=qwen_model)
@@ -101,69 +106,45 @@ def _build_encoder_test_module(num_location_tokens: int = 2):
 
 
 class InsertTokenHelpersTest(unittest.TestCase):
-    def test_slice_batch_indices_preserves_shared_band_order(self):
-        batch = {
-            "input_ids": torch.arange(12).reshape(4, 3),
-            "lat": torch.tensor([1.0, 2.0, 3.0, 4.0]),
-            "input_text": ["a", "b", "c", "d"],
-            "target_texts": [["ta"], ["tb"], ["tc"], ["td"]],
-            "non_rgb_bands": ["VV", "VH", "B04", "B03"],
-        }
-
-        sliced = _slice_batch_indices(batch, [2, 0])
-
-        self.assertTrue(torch.equal(sliced["input_ids"], torch.tensor([[6, 7, 8], [0, 1, 2]])))
-        self.assertTrue(torch.equal(sliced["lat"], torch.tensor([3.0, 1.0])))
-        self.assertEqual(sliced["input_text"], ["c", "a"])
-        self.assertEqual(sliced["target_texts"], [["tc"], ["ta"]])
-        self.assertEqual(sliced["non_rgb_bands"], ["VV", "VH", "B04", "B03"])
-
-    def test_validation_trace_indices_use_explicit_sample_ids(self):
-        module = object.__new__(Qwen3VLModule)
-        module.validation_trace_path = "trace.jsonl"
-        module.validation_trace_sample_ids = ("row-c", "row-a")
-        module._validation_trace_sample_id_set = set(module.validation_trace_sample_ids)
-        module._trainer_or_none = lambda: types.SimpleNamespace(is_global_zero=True)
-        batch = {
-            "input_ids": torch.ones(4, 3),
-            "sample_id": ["row-a", "row-b", "row-c", "row-d"],
-        }
-
-        self.assertEqual(module._validation_trace_indices(batch, batch_idx=5), [0, 2])
-
-    def test_write_validation_trace_appends_jsonl_records(self):
+    def test_write_validation_generations_appends_jsonl_records(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             module = object.__new__(Qwen3VLModule)
-            module.validation_trace_path = str(Path(tmpdir) / "trace.jsonl")
+            module.validation_generation_path = str(
+                Path(tmpdir) / "validation_generations.jsonl"
+            )
             module.loc_mode = "loc_text"
             module.model_name_or_path = "qwen-test"
             module.max_new_tokens = 32
-            module._trainer_or_none = lambda: types.SimpleNamespace(global_step=12)
+            module._trainer_or_none = lambda: types.SimpleNamespace(
+                global_step=12,
+                is_global_zero=True,
+            )
 
-            module._write_validation_trace(
-                predictions=["yes", "no"],
-                target_texts=[["yes"], ["no"]],
-                lat=torch.tensor([48.1, 49.2]),
-                lon=torch.tensor([12.3, 13.4]),
+            module._write_validation_generations(
+                predictions=["yes"],
+                target_texts=[["yes"]],
+                lat=torch.tensor([48.1]),
+                lon=torch.tensor([12.3]),
                 sample_metadata={
-                    "input_text": ["Question A", "Question B"],
-                    "sample_id": ["row-a", "row-b"],
-                    "patch_id": ["patch-a", "patch-b"],
-                    "task_type": ["binary", "binary"],
-                    "task_category": ["country", "season"],
-                    "split": ["validation", "validation"],
-                    "country": ["Austria", "Portugal"],
-                    "season": ["Spring", "Summer"],
-                    "climate_zone": ["Cfb", "Csa"],
+                    "input_text": ["Question A"],
+                    "sample_id": ["row-a"],
+                    "patch_id": ["patch-a"],
+                    "task_type": ["binary"],
+                    "task_category": ["country"],
+                    "split": ["validation"],
+                    "country": ["Austria"],
+                    "season": ["Spring"],
+                    "climate_zone": ["Cfb"],
                 },
                 batch_idx=0,
             )
 
-            lines = (Path(tmpdir) / "trace.jsonl").read_text(encoding="utf-8").splitlines()
-            self.assertEqual(len(lines), 2)
-            self.assertIn('"global_step": 12', lines[0])
-            self.assertIn('"prediction": "yes"', lines[0])
-            self.assertIn('"sample_id": "row-a"', lines[0])
+            record = json.loads(
+                Path(module.validation_generation_path).read_text(encoding="utf-8")
+            )
+            self.assertEqual(record["global_step"], 12)
+            self.assertEqual(record["prediction"], "yes")
+            self.assertEqual(record["sample_id"], "row-a")
 
     def test_write_prediction_export_appends_jsonl_records(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -239,6 +220,80 @@ class InsertTokenHelpersTest(unittest.TestCase):
         self.assertEqual(exported["predictions"], ["generated answer"])
         self.assertEqual(exported["target_texts"], [["reference"]])
 
+    def test_validation_generation_uses_separate_prompt_only_batch(self):
+        module = object.__new__(Qwen3VLModule)
+        prepared_batches = []
+
+        def prepare(batch):
+            prepared_batches.append(batch)
+            if batch.get("prompt_only"):
+                return (
+                    {"input_ids": torch.tensor([[4, 5, 6]])},
+                    [["reference"]],
+                    torch.tensor([48.0]),
+                    torch.tensor([12.0]),
+                    {},
+                    {"sample_id": ["selected"]},
+                )
+            return (
+                {"input_ids": torch.tensor([[1, 2, 3]]), "labels": torch.tensor([[1, 2, 3]])},
+                None,
+                None,
+                None,
+                {},
+                {},
+            )
+
+        class FakeModel:
+            def __call__(self, **batch):
+                return types.SimpleNamespace(loss=torch.tensor(0.5))
+
+        module._prepare_model_inputs = prepare
+        module.model = FakeModel()
+        module.log = lambda *args, **kwargs: None
+        module._reset_projected_token_state = lambda: None
+        module._generate_for_batch = lambda batch: ["generated answer"]
+        written = {}
+        module._write_validation_generations = lambda **kwargs: written.update(kwargs)
+
+        result = module.validation_step(
+            {
+                "supervised": True,
+                "validation_generation_batch": {"prompt_only": True},
+            },
+            batch_idx=7,
+        )
+
+        self.assertEqual(prepared_batches, [{"supervised": True}, {"prompt_only": True}])
+        self.assertEqual(written["predictions"], ["generated answer"])
+        self.assertEqual(written["target_texts"], [["reference"]])
+        self.assertEqual(written["sample_metadata"], {"sample_id": ["selected"]})
+        self.assertEqual(written["batch_idx"], 7)
+        self.assertEqual(result, {"loss": torch.tensor(0.5)})
+
+    def test_generation_restores_previous_model_mode(self):
+        class FakeModel(torch.nn.Module):
+            def generate(self, **kwargs):
+                return torch.tensor([[1, 2, 3, 4]])
+
+        module = object.__new__(Qwen3VLModule)
+        module.model = FakeModel()
+        module.max_new_tokens = 1
+        module.tokenizer = types.SimpleNamespace(decode=lambda *args, **kwargs: "answer")
+
+        original_for_inference = qwen3_module.FastVisionModel.for_inference
+        original_for_training = qwen3_module.FastVisionModel.for_training
+        qwen3_module.FastVisionModel.for_inference = staticmethod(lambda model: model.eval())
+        qwen3_module.FastVisionModel.for_training = staticmethod(lambda model: model.train())
+        try:
+            for initial_mode in (False, True):
+                module.model.train(initial_mode)
+                module._generate_for_batch({"input_ids": torch.tensor([[1, 2, 3]])})
+                self.assertEqual(module.model.training, initial_mode)
+        finally:
+            qwen3_module.FastVisionModel.for_inference = original_for_inference
+            qwen3_module.FastVisionModel.for_training = original_for_training
+
     def test_insert_tokens_2d_preserves_order_and_positions(self):
         tensor = torch.tensor([[1, 2, 3, 4], [10, 11, 12, 13]])
         insert = torch.tensor([[90, 91], [80, 81]])
@@ -249,93 +304,35 @@ class InsertTokenHelpersTest(unittest.TestCase):
         expected = torch.tensor([[1, 2, 90, 91, 3, 4], [80, 81, 10, 11, 12, 13]])
         self.assertTrue(torch.equal(out, expected))
 
-    def test_insert_tokens_3d_preserves_order_and_shapes(self):
-        tensor = torch.tensor(
-            [
-                [[1.0, 1.1], [2.0, 2.1], [3.0, 3.1]],
-                [[10.0, 10.1], [11.0, 11.1], [12.0, 12.1]],
-            ]
-        )
-        insert = torch.tensor(
-            [
-                [[90.0, 90.1], [91.0, 91.1]],
-                [[80.0, 80.1], [81.0, 81.1]],
-            ]
-        )
-        positions = torch.tensor([1, 3])
-
-        out = Qwen3VLModule._insert_tokens_3d(tensor, insert, positions)
-
-        self.assertEqual(out.shape, (2, 5, 2))
-        expected_first = torch.tensor(
-            [[1.0, 1.1], [90.0, 90.1], [91.0, 91.1], [2.0, 2.1], [3.0, 3.1]]
-        )
-        expected_second = torch.tensor(
-            [[10.0, 10.1], [11.0, 11.1], [12.0, 12.1], [80.0, 80.1], [81.0, 81.1]]
-        )
-        self.assertTrue(torch.equal(out[0], expected_first))
-        self.assertTrue(torch.equal(out[1], expected_second))
-
-    def test_insert_position_ids_inserts_contiguous_positions_and_shifts_suffix(self):
-        position_ids = torch.tensor(
-            [
-                [[0, 1, 2, 3], [5, 6, 7, 8]],
-                [[10, 11, 12, 13], [15, 16, 17, 18]],
-                [[20, 21, 22, 23], [25, 26, 27, 28]],
-            ]
-        )
-        positions = torch.tensor([2, 0])
-
-        out = Qwen3VLModule._insert_position_ids(position_ids, positions, n=2)
-
-        expected = torch.tensor(
-            [
-                [[0, 1, 2, 3, 4, 5], [0, 1, 7, 8, 9, 10]],
-                [[10, 11, 12, 13, 14, 15], [0, 1, 17, 18, 19, 20]],
-                [[20, 21, 22, 23, 24, 25], [0, 1, 27, 28, 29, 30]],
-            ]
-        )
-        self.assertTrue(torch.equal(out, expected))
-
-    def test_insert_projected_tokens_updates_decoder_kwargs(self):
+    def test_replace_projected_token_placeholders_updates_only_embeddings(self):
         module = object.__new__(Qwen3VLModule)
         kwargs = {
             "inputs_embeds": torch.tensor(
                 [
-                    [[1.0], [2.0], [3.0]],
-                    [[10.0], [11.0], [12.0]],
+                    [[1.0], [0.0], [0.0], [7.0], [2.0], [3.0]],
+                    [[10.0], [11.0], [12.0], [0.0], [0.0], [7.0]],
                 ]
             ),
-            "attention_mask": torch.tensor([[1, 1, 1], [1, 1, 1]]),
-            "position_ids": torch.tensor(
-                [
-                    [[0, 1, 2], [5, 6, 7]],
-                    [[10, 11, 12], [15, 16, 17]],
-                    [[20, 21, 22], [25, 26, 27]],
-                ]
-            ),
-            "visual_pos_masks": torch.tensor([[False, True, True], [False, True, True]]),
+            "attention_mask": torch.ones(2, 6, dtype=torch.long),
         }
         tokens = torch.tensor([[[90.0], [91.0]], [[80.0], [81.0]]])
         positions = torch.tensor([1, 3])
 
-        module._insert_projected_tokens_in_kwargs(kwargs, tokens, positions)
+        module._replace_projected_token_placeholders(
+            kwargs,
+            tokens,
+            positions,
+            torch.tensor([True, True]),
+        )
 
         expected_embeds = torch.tensor(
             [
-                [[1.0], [90.0], [91.0], [2.0], [3.0]],
-                [[10.0], [11.0], [12.0], [80.0], [81.0]],
+                [[1.0], [7.0], [90.0], [91.0], [2.0], [3.0]],
+                [[10.0], [11.0], [12.0], [7.0], [80.0], [81.0]],
             ]
         )
-        expected_attention = torch.tensor([[1, 1, 1, 1, 1], [1, 1, 1, 1, 1]])
-        expected_visual_mask = torch.tensor(
-            [[False, False, False, True, True], [False, True, True, False, False]]
-        )
-
         self.assertTrue(torch.equal(kwargs["inputs_embeds"], expected_embeds))
-        self.assertTrue(torch.equal(kwargs["attention_mask"], expected_attention))
-        self.assertTrue(torch.equal(kwargs["visual_pos_masks"], expected_visual_mask))
-        self.assertEqual(kwargs["position_ids"].shape, (3, 2, 5))
+        self.assertTrue(torch.equal(kwargs["attention_mask"], torch.ones(2, 6, dtype=torch.long)))
 
     def test_projected_token_hook_inserts_non_rgb_tokens(self):
         module = object.__new__(Qwen3VLModule)
@@ -345,6 +342,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "tensor": torch.ones(2, 12, 2, 2),
             "bands": ["VV", "VH"],
             "insert_positions": torch.tensor([1, 3]),
+            "has_visual": torch.tensor([True, True]),
         }
 
         class FakeEncoder:
@@ -366,23 +364,23 @@ class InsertTokenHelpersTest(unittest.TestCase):
         kwargs = {
             "inputs_embeds": torch.tensor(
                 [
-                    [[1.0], [2.0], [3.0]],
-                    [[10.0], [11.0], [12.0]],
+                    [[1.0], [0.0], [0.0], [7.0], [2.0], [3.0]],
+                    [[10.0], [11.0], [12.0], [0.0], [0.0], [7.0]],
                 ]
             ),
-            "attention_mask": torch.tensor([[1, 1, 1], [1, 1, 1]]),
+            "attention_mask": torch.ones(2, 6, dtype=torch.long),
         }
 
         module._projected_token_insertion_hook(None, (), kwargs)
 
         expected_embeds = torch.tensor(
             [
-                [[1.0], [90.0], [91.0], [2.0], [3.0]],
-                [[10.0], [11.0], [12.0], [80.0], [81.0]],
+                [[1.0], [7.0], [90.0], [91.0], [2.0], [3.0]],
+                [[10.0], [11.0], [12.0], [7.0], [80.0], [81.0]],
             ]
         )
         self.assertTrue(torch.equal(kwargs["inputs_embeds"], expected_embeds))
-        self.assertTrue(torch.equal(kwargs["attention_mask"], torch.ones(2, 5, dtype=torch.long)))
+        self.assertTrue(torch.equal(kwargs["attention_mask"], torch.ones(2, 6, dtype=torch.long)))
         self.assertTrue(torch.equal(encoder.imagery, torch.ones(2, 12, 2, 2)))
         self.assertEqual(encoder.bands, ["VV", "VH"])
         self.assertEqual(projection.features.shape, (2, 2, 5))
@@ -394,32 +392,100 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "tensor": torch.ones(1, 12, 2, 2),
             "bands": None,
             "insert_positions": torch.tensor([1]),
+            "has_visual": torch.tensor([True]),
         }
         module._location_insertion_state = {
             "lat": torch.tensor([1.0], dtype=torch.float64),
             "lon": torch.tensor([2.0], dtype=torch.float64),
             "insert_positions": torch.tensor([1]),
+            "has_visual": torch.tensor([True]),
         }
         module.non_rgb_encoder = lambda imagery, bands: torch.zeros(1, 1, 5)
         module.non_rgb_modality_projection = lambda features: torch.tensor([[[80.0]]])
         module.satclip = lambda coords: torch.zeros(1, 3)
         module.location_modality_projection = lambda features: torch.tensor([[[90.0]]])
 
-        kwargs = {"inputs_embeds": torch.tensor([[[1.0], [2.0]]])}
+        kwargs = {
+            "inputs_embeds": torch.tensor([[[1.0], [0.0], [0.0], [7.0], [2.0]]])
+        }
 
         module._projected_token_insertion_hook(None, (), kwargs)
 
-        expected = torch.tensor([[[1.0], [90.0], [80.0], [2.0]]])
+        expected = torch.tensor([[[1.0], [7.0], [90.0], [80.0], [2.0]]])
         self.assertTrue(torch.equal(kwargs["inputs_embeds"], expected))
+
+    def test_projected_token_hook_runs_with_empty_cache_and_skips_filled_cache(self):
+        module = object.__new__(Qwen3VLModule)
+        module.device = torch.device("cpu")
+        module._non_rgb_insertion_state = None
+        module._location_insertion_state = {
+            "lat": torch.tensor([1.0], dtype=torch.float64),
+            "lon": torch.tensor([2.0], dtype=torch.float64),
+            "insert_positions": torch.tensor([1]),
+            "has_visual": torch.tensor([True]),
+        }
+        module.satclip = lambda coords: coords.float()
+        module.location_modality_projection = lambda features: features[:, :1].unsqueeze(-1)
+
+        class FakeCache:
+            def __init__(self, length):
+                self.length = length
+
+            def get_seq_length(self):
+                return self.length
+
+        prefill = {
+            "inputs_embeds": torch.tensor([[[0.0], [0.0], [7.0], [0.0]]]),
+            "past_key_values": FakeCache(0),
+        }
+        module._projected_token_insertion_hook(None, (), prefill)
+        self.assertEqual(prefill["inputs_embeds"][0, 2, 0].item(), 2.0)
+
+        decode = {
+            "inputs_embeds": torch.zeros(1, 1, 1),
+            "past_key_values": FakeCache(3),
+        }
+        module._projected_token_insertion_hook(None, (), decode)
+        self.assertTrue(torch.equal(decode["inputs_embeds"], torch.zeros(1, 1, 1)))
+
+    def test_projected_location_placeholders_change_with_coordinates(self):
+        module = object.__new__(Qwen3VLModule)
+        module.device = torch.device("cpu")
+        module._non_rgb_insertion_state = None
+        module._location_insertion_state = {
+            "lat": torch.tensor([1.0, 3.0], dtype=torch.float64),
+            "lon": torch.tensor([2.0, 4.0], dtype=torch.float64),
+            "insert_positions": torch.tensor([1, 1]),
+            "has_visual": torch.tensor([True, True]),
+        }
+        module.satclip = lambda coords: coords.float()
+        module.location_modality_projection = lambda features: features[:, :1].unsqueeze(-1)
+        kwargs = {
+            "inputs_embeds": torch.tensor(
+                [[[0.0], [0.0], [7.0], [0.0]], [[0.0], [0.0], [7.0], [0.0]]]
+            )
+        }
+
+        module._projected_token_insertion_hook(None, (), kwargs)
+
+        self.assertEqual(kwargs["inputs_embeds"][0, 2, 0].item(), 2.0)
+        self.assertEqual(kwargs["inputs_embeds"][1, 2, 0].item(), 4.0)
+        self.assertFalse(
+            torch.equal(kwargs["inputs_embeds"][0], kwargs["inputs_embeds"][1])
+        )
 
 
 class PrepareModelInputsTest(unittest.TestCase):
     def test_prepare_model_inputs_inserts_ignore_labels_at_visual_boundary(self):
         module = _build_encoder_test_module(num_location_tokens=2)
         batch = {
-            "input_ids": torch.tensor([[101, 102, 999, 999, 201], [301, 999, 302, 303, 304]]),
-            "attention_mask": torch.tensor([[1, 1, 1, 1, 1], [1, 1, 1, 1, 1]]),
-            "labels": torch.tensor([[11, 12, 13, 14, 15], [21, 22, 23, 24, 25]]),
+            "input_ids": torch.tensor(
+                [[101, 102, 997, 999, 999, 201], [301, 997, 999, 302, 303, 304]]
+            ),
+            "attention_mask": torch.ones(2, 6, dtype=torch.long),
+            "labels": torch.tensor(
+                [[11, 12, 13, 14, 15, 16], [21, 22, 23, 24, 25, 26]]
+            ),
             "lat": torch.tensor([52.5, -33.9], dtype=torch.float64),
             "lon": torch.tensor([13.4, 151.2], dtype=torch.float64),
             "target_texts": [["a"], ["b"]],
@@ -437,9 +503,24 @@ class PrepareModelInputsTest(unittest.TestCase):
         )
 
         expected_labels = torch.tensor(
-            [[11, 12, -100, -100, 13, 14, 15], [21, -100, -100, 22, 23, 24, 25]]
+            [
+                [11, 12, -100, -100, 13, 14, 15, 16],
+                [21, -100, -100, 22, 23, 24, 25, 26],
+            ]
         )
         self.assertTrue(torch.equal(model_batch["labels"], expected_labels))
+        self.assertTrue(
+            torch.equal(
+                model_batch["input_ids"],
+                torch.tensor(
+                    [
+                        [101, 102, 0, 0, 997, 999, 999, 201],
+                        [301, 0, 0, 997, 999, 302, 303, 304],
+                    ]
+                ),
+            )
+        )
+        self.assertTrue(torch.equal(model_batch["attention_mask"], torch.ones(2, 8, dtype=torch.long)))
         self.assertEqual(module._location_insertion_state["insert_positions"].tolist(), [2, 1])
         self.assertEqual(target_texts, [["a"], ["b"]])
         self.assertTrue(torch.equal(lat, torch.tensor([52.5, -33.9], dtype=torch.float64)))
@@ -470,6 +551,12 @@ class PrepareModelInputsTest(unittest.TestCase):
 
         expected_labels = torch.tensor([[11, 12, 13, -100, -100, -100]])
         self.assertTrue(torch.equal(model_batch["labels"], expected_labels))
+        self.assertTrue(
+            torch.equal(model_batch["input_ids"], torch.tensor([[101, 102, 103, 0, 0, 0]]))
+        )
+        self.assertTrue(
+            torch.equal(model_batch["attention_mask"], torch.tensor([[1, 1, 1, 1, 0, 0]]))
+        )
         self.assertEqual(module._location_insertion_state["insert_positions"].tolist(), [3])
 
     def test_prepare_model_inputs_is_invariant_for_non_encoder_modes(self):
@@ -512,26 +599,37 @@ class PrepareModelInputsTest(unittest.TestCase):
         module.non_rgb_conditioning = "enabled"
         module.num_non_rgb_tokens = 2
         module.device = torch.device("cpu")
+        module.tokenizer = types.SimpleNamespace(pad_token_id=0)
         module._location_insertion_state = None
         module._non_rgb_insertion_state = None
 
-        config = types.SimpleNamespace(image_token_id=999, video_token_id=998)
+        config = types.SimpleNamespace(
+            image_token_id=999,
+            video_token_id=998,
+            vision_start_token_id=997,
+        )
         inner = types.SimpleNamespace(config=config)
         module.model = types.SimpleNamespace(base_model=types.SimpleNamespace(model=types.SimpleNamespace(model=inner)))
 
         imagery = torch.ones(1, 12, 2, 2)
         batch = {
-            "input_ids": torch.tensor([[101, 999, 201]]),
-            "attention_mask": torch.tensor([[1, 1, 1]]),
-            "labels": torch.tensor([[11, 12, 13]]),
+            "input_ids": torch.tensor([[101, 997, 999, 201]]),
+            "attention_mask": torch.tensor([[1, 1, 1, 1]]),
+            "labels": torch.tensor([[11, 12, 13, 14]]),
             "non_rgb_imagery": imagery,
             "non_rgb_bands": ["VV", "VH"],
         }
 
         model_batch, _, _, _, non_rgb_imagery, _ = module._prepare_model_inputs(batch)
 
-        expected_labels = torch.tensor([[11, -100, -100, 12, 13]])
+        expected_labels = torch.tensor([[11, -100, -100, 12, 13, 14]])
         self.assertTrue(torch.equal(model_batch["labels"], expected_labels))
+        self.assertTrue(
+            torch.equal(
+                model_batch["input_ids"],
+                torch.tensor([[101, 0, 0, 997, 999, 201]]),
+            )
+        )
         self.assertNotIn("non_rgb_imagery", model_batch)
         self.assertNotIn("non_rgb_bands", model_batch)
         self.assertTrue(torch.equal(non_rgb_imagery["tensor"], imagery))
@@ -615,19 +713,19 @@ class AdapterArtifactSetupTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "location_projection_lr_multiplier"):
             Qwen3VLModule(location_projection_lr_multiplier=0.0)
 
-    def test_validation_trace_sample_ids_require_path(self):
-        with self.assertRaisesRegex(ValueError, "validation_trace_path"):
-            Qwen3VLModule(validation_trace_sample_ids=["row-a"])
+    def test_validation_generation_sample_ids_require_path(self):
+        with self.assertRaisesRegex(ValueError, "validation_generation_path"):
+            Qwen3VLModule(validation_generation_sample_ids=["row-a"])
 
-    def test_validation_trace_path_requires_sample_ids(self):
-        with self.assertRaisesRegex(ValueError, "validation_trace_sample_ids"):
-            Qwen3VLModule(validation_trace_path="trace.jsonl")
+    def test_validation_generation_path_requires_sample_ids(self):
+        with self.assertRaisesRegex(ValueError, "validation_generation_sample_ids"):
+            Qwen3VLModule(validation_generation_path="validation_generations.jsonl")
 
-    def test_validation_trace_sample_ids_must_be_unique(self):
+    def test_validation_generation_sample_ids_must_be_unique(self):
         with self.assertRaisesRegex(ValueError, "duplicates"):
             Qwen3VLModule(
-                validation_trace_sample_ids=["row-a", "row-a"],
-                validation_trace_path="trace.jsonl",
+                validation_generation_sample_ids=["row-a", "row-a"],
+                validation_generation_path="validation_generations.jsonl",
             )
 
     def test_non_rgb_projection_lr_multiplier_must_be_positive(self):

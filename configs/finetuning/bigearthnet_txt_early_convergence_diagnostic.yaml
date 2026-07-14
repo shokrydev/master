@@ -13,7 +13,7 @@ trainer:
 
 model:
   init_args:
-    validation_trace_sample_ids:
+    validation_generation_sample_ids:
       - "8826437"  # captioning
       - "5819150"  # binary / presence
       - "506304"   # binary / adjacency
@@ -22,7 +22,7 @@ model:
       - "8457166"  # mcq / season
       - "5513687"  # bounding box / point
       - "5820049"  # bounding box / reference
-    validation_trace_path: ${oc.env:FINETUNING_OUTPUT_DIR,./outputs}/validation_generation_trace.jsonl
+    validation_generation_path: ${oc.env:FINETUNING_OUTPUT_DIR,./outputs}/validation_generations.jsonl
 
 data:
   init_args:

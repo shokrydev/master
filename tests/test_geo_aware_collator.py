@@ -6,10 +6,36 @@ from src.data_modules.geo_aware_collator import (
     DEFAULT_LOCATION_EMBED_MARKER,
     DEFAULT_LOCATION_TEXT_TEMPLATE,
     GeoAwareCollator,
+    ValidationGenerationCollator,
 )
 
 
 class TestGeoAwareCollator(unittest.TestCase):
+    def test_validation_generation_collator_builds_selected_prompt_only_sub_batch(self) -> None:
+        generation_items = []
+
+        def supervised_collator(items):
+            return {"supervised_ids": [item["sample_id"] for item in items]}
+
+        def generation_collator(items):
+            generation_items.extend(items)
+            return {"generation_ids": [item["sample_id"] for item in items]}
+
+        collator = ValidationGenerationCollator(
+            supervised_collator,
+            generation_collator,
+            sample_ids=("selected",),
+        )
+        items = [{"sample_id": "other"}, {"sample_id": "selected"}]
+
+        batch = collator(items)
+
+        self.assertEqual(batch["supervised_ids"], ["other", "selected"])
+        self.assertEqual(
+            batch["validation_generation_batch"]["generation_ids"], ["selected"]
+        )
+        self.assertEqual(generation_items, [{"sample_id": "selected"}])
+
     def test_builds_chat_messages_with_system_prompt_and_re_attaches_metadata(self) -> None:
         captured = {}
 

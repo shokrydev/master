@@ -761,6 +761,7 @@ class BENTxTDataModule(pl.LightningDataModule):
         self.validation_subset_seed = validation_subset_seed
         self.test_splits = test_splits
         self._collator: Callable | None = None
+        self._validation_collator: Callable | None = None
         self._test_collator: Callable | None = None
         self.train_ds: Dataset | None = None
         self.val_ds: Dataset | None = None
@@ -815,6 +816,10 @@ class BENTxTDataModule(pl.LightningDataModule):
     def set_test_collator(self, collator: Callable | None) -> None:
         """Set an optional prompt-only collator for benchmark generation."""
         self._test_collator = collator
+
+    def set_validation_collator(self, collator: Callable | None) -> None:
+        """Set an optional collator for validation-only diagnostics."""
+        self._validation_collator = collator
 
     def setup(self, stage: str | None = None) -> None:
         """
@@ -876,7 +881,11 @@ class BENTxTDataModule(pl.LightningDataModule):
 
     def val_dataloader(self):
         """Create and return the validation DataLoader without shuffling."""
-        return self._create_dataloader(self.val_ds, shuffle=False)
+        return self._create_dataloader(
+            self.val_ds,
+            shuffle=False,
+            collator=self._validation_collator,
+        )
 
     def test_dataloader(self):
         """Create the DataLoader for the configured test split or splits."""

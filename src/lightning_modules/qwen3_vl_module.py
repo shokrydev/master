@@ -14,7 +14,10 @@ from torch.optim.lr_scheduler import LambdaLR
 from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
 
-from src.data_modules.geo_aware_collator import GeoAwareCollator
+from src.data_modules.geo_aware_collator import (
+    GeoAwareCollator,
+    ValidationGenerationCollator,
+)
 
 QWEN_MODALITY_PROJECTION_MODULES = [
     "merger",
@@ -22,31 +25,6 @@ QWEN_MODALITY_PROJECTION_MODULES = [
     "deepstack_merger_list.1",
     "deepstack_merger_list.2",
 ]
-
-
-def _slice_batch_indices(batch: dict[str, Any], indices: list[int]) -> dict[str, Any]:
-    """Return a shallow batch copy containing the selected sample indices."""
-    if not indices:
-        raise ValueError("indices must not be empty")
-    batch_size = int(batch["input_ids"].shape[0])
-    invalid_indices = [index for index in indices if index < 0 or index >= batch_size]
-    if invalid_indices:
-        raise IndexError(f"Batch indices out of range: {invalid_indices}")
-    sliced = {}
-    for key, value in batch.items():
-        if isinstance(value, torch.Tensor) and value.ndim > 0 and value.shape[0] == batch_size:
-            sliced[key] = value[indices]
-        elif key == "non_rgb_bands" and isinstance(value, list) and all(
-            isinstance(item, str) for item in value
-        ):
-            sliced[key] = value
-        elif isinstance(value, list) and len(value) == batch_size:
-            sliced[key] = [value[index] for index in indices]
-        elif isinstance(value, tuple) and len(value) == batch_size:
-            sliced[key] = tuple(value[index] for index in indices)
-        else:
-            sliced[key] = value
-    return sliced
 
 
 class Qwen3VLModule(L.LightningModule):
@@ -80,8 +58,8 @@ class Qwen3VLModule(L.LightningModule):
         warmup_ratio: float = 0.1,
         max_steps: int | None = None,
         max_new_tokens: int = 256,
-        validation_trace_sample_ids: list[str] | None = None,
-        validation_trace_path: str | None = None,
+        validation_generation_sample_ids: list[str] | None = None,
+        validation_generation_path: str | None = None,
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
         loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
         location_text_template: str | None = None,
@@ -124,10 +102,12 @@ class Qwen3VLModule(L.LightningModule):
             weight_decay: Weight decay for optimizer
             warmup_ratio: Warmup ratio for scheduler
             max_steps: Total training steps (for scheduler)
-            max_new_tokens: Max tokens to generate for validation traces and test predictions.
-            validation_trace_sample_ids: Explicit sample IDs for qualitative
-                validation traces.
-            validation_trace_path: JSONL file for qualitative validation traces.
+            max_new_tokens: Maximum tokens generated for validation examples and
+                test predictions.
+            validation_generation_sample_ids: Explicit sample IDs for qualitative
+                validation generations.
+            validation_generation_path: JSONL file for qualitative validation
+                generations.
             system_prompt: Optional system message injected during chat formatting.
             loc_mode: Location conditioning mode ("no_loc", "loc_text", "loc_embed")
             location_text_template: Format string appended to the user prompt when
@@ -182,13 +162,22 @@ class Qwen3VLModule(L.LightningModule):
             raise ValueError("location_projection_lr_multiplier must be positive")
         if non_rgb_projection_lr_multiplier <= 0:
             raise ValueError("non_rgb_projection_lr_multiplier must be positive")
-        validation_trace_sample_ids = validation_trace_sample_ids or []
-        if len(set(validation_trace_sample_ids)) != len(validation_trace_sample_ids):
-            raise ValueError("validation_trace_sample_ids must not contain duplicates")
-        if validation_trace_sample_ids and not validation_trace_path:
-            raise ValueError("validation_trace_path is required when validation tracing is enabled")
-        if validation_trace_path and not validation_trace_sample_ids:
-            raise ValueError("validation_trace_sample_ids is required when validation_trace_path is set")
+        validation_generation_sample_ids = validation_generation_sample_ids or []
+        if len(set(validation_generation_sample_ids)) != len(
+            validation_generation_sample_ids
+        ):
+            raise ValueError(
+                "validation_generation_sample_ids must not contain duplicates"
+            )
+        if validation_generation_sample_ids and not validation_generation_path:
+            raise ValueError(
+                "validation_generation_path is required when validation generation is enabled"
+            )
+        if validation_generation_path and not validation_generation_sample_ids:
+            raise ValueError(
+                "validation_generation_sample_ids is required when "
+                "validation_generation_path is set"
+            )
         if not 0.0 <= warmup_ratio < 1.0:
             raise ValueError("warmup_ratio must be in the interval [0, 1)")
         if non_rgb_feature_mode not in {"spatial_4x4", "pooled_prelogit"}:
@@ -223,9 +212,12 @@ class Qwen3VLModule(L.LightningModule):
         self.warmup_ratio = warmup_ratio
         self.max_steps = max_steps
         self.max_new_tokens = max_new_tokens
-        self.validation_trace_sample_ids = tuple(str(sample_id) for sample_id in validation_trace_sample_ids)
-        self._validation_trace_sample_id_set = set(self.validation_trace_sample_ids)
-        self.validation_trace_path = str(validation_trace_path) if validation_trace_path else None
+        self.validation_generation_sample_ids = tuple(
+            str(sample_id) for sample_id in validation_generation_sample_ids
+        )
+        self.validation_generation_path = (
+            str(validation_generation_path) if validation_generation_path else None
+        )
         self.system_prompt = system_prompt
         self.loc_mode = loc_mode
         self.location_text_template = location_text_template
@@ -249,6 +241,7 @@ class Qwen3VLModule(L.LightningModule):
         self.model = None
         self.tokenizer = None
         self._collator = None
+        self._validation_collator = None
         self._test_collator = None
 
         # Projected side-modality components, initialized in setup when enabled.
@@ -348,6 +341,19 @@ class Qwen3VLModule(L.LightningModule):
             location_text_template=location_prompt_template,
             coordinates_decimal_places=self.coordinates_decimal_places,
         )
+        if self.validation_generation_sample_ids:
+            validation_generation_collator = GeoAwareCollator(
+                base_collator,
+                system_prompt=self.system_prompt,
+                location_text_template=location_prompt_template,
+                coordinates_decimal_places=self.coordinates_decimal_places,
+                generation_prompt=True,
+            )
+            self._validation_collator = ValidationGenerationCollator(
+                self._collator,
+                validation_generation_collator,
+                self.validation_generation_sample_ids,
+            )
         if self.prediction_export_path:
             self._test_collator = GeoAwareCollator(
                 base_collator,
@@ -526,75 +532,48 @@ class Qwen3VLModule(L.LightningModule):
             out[b, p + n :] = tensor[b, p:]
         return out
 
-    @staticmethod
-    def _insert_tokens_3d(
-        tensor: torch.Tensor, insert: torch.Tensor, positions: torch.Tensor
-    ) -> torch.Tensor:
-        """Insert `(B, n, H)` tokens into a `(B, L, H)` tensor at per-sample positions."""
-        B, L, H = tensor.shape
-        n = insert.shape[1]
-        out = tensor.new_empty(B, L + n, H)
-        for b in range(B):
-            p = int(positions[b].item())
-            out[b, :p] = tensor[b, :p]
-            out[b, p : p + n] = insert[b]
-            out[b, p + n :] = tensor[b, p:]
-        return out
-
-    @staticmethod
-    def _insert_position_ids(
-        position_ids: torch.Tensor, positions: torch.Tensor, n: int
-    ) -> torch.Tensor:
-        """Insert contiguous position ids before the visual block and shift later ids."""
-        _, B, L = position_ids.shape
-        out = position_ids.new_empty(3, B, L + n)
-        for b in range(B):
-            p = int(positions[b].item())
-            out[:, b, :p] = position_ids[:, b, :p]
-            if p > 0:
-                loc_start = position_ids[:, b, p - 1 : p] + 1
-            else:
-                loc_start = torch.zeros(3, 1, device=position_ids.device, dtype=position_ids.dtype)
-            loc_offsets = torch.arange(n, device=position_ids.device, dtype=position_ids.dtype).view(1, n)
-            out[:, b, p : p + n] = loc_start + loc_offsets
-            out[:, b, p + n :] = position_ids[:, b, p:] + n
-        return out
-
-    def _insert_projected_tokens_in_kwargs(
+    def _replace_projected_token_placeholders(
         self,
         kwargs: dict[str, Any],
         tokens: torch.Tensor,
-        insert_positions: torch.Tensor,
+        positions: torch.Tensor,
+        has_visual: torch.Tensor,
     ) -> None:
-        """Insert projected modality tokens into decoder kwargs in-place."""
+        """Place projected tokens after Qwen's visual-start embedding."""
         if "inputs_embeds" not in kwargs or kwargs["inputs_embeds"] is None:
             return
 
         inputs_embeds = kwargs["inputs_embeds"]
         tokens = tokens.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
-        insert_positions = insert_positions.to(inputs_embeds.device)
-        kwargs["inputs_embeds"] = self._insert_tokens_3d(inputs_embeds, tokens, insert_positions)
+        positions = positions.to(inputs_embeds.device)
+        has_visual = has_visual.to(inputs_embeds.device)
+        out = inputs_embeds.clone()
+        num_tokens = tokens.shape[1]
+        for batch_index in range(inputs_embeds.shape[0]):
+            position = int(positions[batch_index].item())
+            if bool(has_visual[batch_index]):
+                visual_start = inputs_embeds[batch_index, position + num_tokens].clone()
+                out[batch_index, position] = visual_start
+                out[batch_index, position + 1 : position + num_tokens + 1] = tokens[batch_index]
+            else:
+                out[batch_index, position : position + num_tokens] = tokens[batch_index]
+        kwargs["inputs_embeds"] = out
 
-        B = inputs_embeds.shape[0]
-        n = tokens.shape[1]
-        device = tokens.device
-
-        if "attention_mask" in kwargs and kwargs["attention_mask"] is not None:
-            ones = torch.ones(B, n, device=device, dtype=kwargs["attention_mask"].dtype)
-            kwargs["attention_mask"] = self._insert_tokens_2d(
-                kwargs["attention_mask"], ones, insert_positions
-            )
-
-        if "position_ids" in kwargs and kwargs["position_ids"] is not None:
-            kwargs["position_ids"] = self._insert_position_ids(
-                kwargs["position_ids"], insert_positions, n
-            )
-
-        if kwargs.get("visual_pos_masks") is not None:
-            pad = torch.zeros(B, n, device=device, dtype=kwargs["visual_pos_masks"].dtype)
-            kwargs["visual_pos_masks"] = self._insert_tokens_2d(
-                kwargs["visual_pos_masks"], pad, insert_positions
-            )
+    @staticmethod
+    def _cache_has_tokens(past_key_values: Any) -> bool:
+        """Return whether a generation cache already contains prompt tokens."""
+        if past_key_values is None:
+            return False
+        get_seq_length = getattr(past_key_values, "get_seq_length", None)
+        if callable(get_seq_length):
+            return int(get_seq_length()) > 0
+        if isinstance(past_key_values, (tuple, list)):
+            if not past_key_values:
+                return False
+            first_layer = past_key_values[0]
+            if isinstance(first_layer, (tuple, list)) and first_layer:
+                return int(first_layer[0].shape[-2]) > 0
+        return True
 
     def _projected_token_insertion_hook(self, module, args, kwargs):
         """Forward pre-hook that inserts projected side-modality tokens."""
@@ -603,15 +582,18 @@ class Qwen3VLModule(L.LightningModule):
         if location_state is None and non_rgb_state is None:
             return args, kwargs
 
-        # Skip during KV-cache steps (autoregressive generation after the first forward)
-        if kwargs.get("past_key_values") is not None:
+        # Replace placeholders during training and generation prefill, but not
+        # during later one-token decode steps.
+        if self._cache_has_tokens(kwargs.get("past_key_values")):
             return args, kwargs
 
         projected_tokens = []
         insert_positions = None
+        has_visual = None
 
         if location_state is not None:
             insert_positions = location_state["insert_positions"]
+            has_visual = location_state["has_visual"]
             lat = location_state["lat"]
             lon = location_state["lon"]
 
@@ -625,6 +607,7 @@ class Qwen3VLModule(L.LightningModule):
 
         if non_rgb_state is not None:
             insert_positions = non_rgb_state["insert_positions"]
+            has_visual = non_rgb_state["has_visual"]
             imagery = non_rgb_state["tensor"].to(self.device)
             bands = non_rgb_state["bands"]
             with torch.no_grad():
@@ -636,23 +619,27 @@ class Qwen3VLModule(L.LightningModule):
             return args, kwargs
 
         tokens = torch.cat(projected_tokens, dim=1)
-        self._insert_projected_tokens_in_kwargs(kwargs, tokens, insert_positions)
+        self._replace_projected_token_placeholders(
+            kwargs,
+            tokens,
+            insert_positions,
+            has_visual,
+        )
 
         return args, kwargs
 
-    def _compute_visual_insert_positions(self, batch: dict[str, Any]) -> torch.Tensor:
-        """Return per-sample insertion positions at the first visual token or sequence end."""
+    def _compute_visual_boundary(
+        self, batch: dict[str, Any]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return first visual-start positions and whether each sample has imagery."""
         input_ids = batch.get("input_ids")
         attention_mask = batch.get("attention_mask")
         if input_ids is None:
             raise ValueError("input_ids are required for projected token insertion")
 
         config = self.model.base_model.model.model.config
-        image_token_id = config.image_token_id
-        video_token_id = getattr(config, "video_token_id", None)
-        visual_mask = input_ids.eq(image_token_id)
-        if video_token_id is not None:
-            visual_mask = visual_mask | input_ids.eq(video_token_id)
+        visual_start_token_id = config.vision_start_token_id
+        visual_mask = input_ids.eq(visual_start_token_id)
 
         has_visual = visual_mask.any(dim=1)
         first_visual = visual_mask.int().argmax(dim=1)
@@ -660,7 +647,8 @@ class Qwen3VLModule(L.LightningModule):
             fallback = attention_mask.sum(dim=1)
         else:
             fallback = torch.full_like(first_visual, input_ids.shape[1])
-        return torch.where(has_visual, first_visual, fallback)
+        positions = torch.where(has_visual, first_visual, fallback)
+        return positions, has_visual
 
     def _prepare_model_inputs(self, batch: dict[str, Any]):
         """Strip non-model fields and set up projected token insertion state."""
@@ -693,8 +681,9 @@ class Qwen3VLModule(L.LightningModule):
 
         uses_projected_tokens = self.loc_mode == "loc_embed" or self.non_rgb_conditioning == "enabled"
         insert_positions = None
+        has_visual = None
         if uses_projected_tokens:
-            insert_positions = self._compute_visual_insert_positions(batch)
+            insert_positions, has_visual = self._compute_visual_boundary(batch)
 
         num_inserted_tokens = 0
         if self.non_rgb_conditioning == "enabled":
@@ -702,6 +691,7 @@ class Qwen3VLModule(L.LightningModule):
                 "tensor": non_rgb_imagery["tensor"].to(self.device),
                 "bands": non_rgb_imagery["bands"],
                 "insert_positions": insert_positions.to(self.device),
+                "has_visual": has_visual.to(self.device),
             }
             num_inserted_tokens += self.num_non_rgb_tokens
 
@@ -713,6 +703,7 @@ class Qwen3VLModule(L.LightningModule):
                 "lat": lat.to(self.device),
                 "lon": lon.to(self.device),
                 "insert_positions": insert_positions.to(self.device),
+                "has_visual": has_visual.to(self.device),
             }
             num_inserted_tokens += self.num_location_tokens
 
@@ -725,6 +716,31 @@ class Qwen3VLModule(L.LightningModule):
                 dtype=batch["labels"].dtype,
             )
             batch["labels"] = self._insert_tokens_2d(batch["labels"], ignore, insert_positions)
+
+        if num_inserted_tokens > 0:
+            batch_size = batch["input_ids"].shape[0]
+            placeholder_token_id = self.tokenizer.pad_token_id
+            if placeholder_token_id is None:
+                raise ValueError("Projected token conditioning requires a tokenizer pad token")
+            placeholders = torch.full(
+                (batch_size, num_inserted_tokens),
+                placeholder_token_id,
+                device=batch["input_ids"].device,
+                dtype=batch["input_ids"].dtype,
+            )
+            batch["input_ids"] = self._insert_tokens_2d(
+                batch["input_ids"], placeholders, insert_positions
+            )
+            if "attention_mask" in batch:
+                attended = torch.ones(
+                    batch_size,
+                    num_inserted_tokens,
+                    device=batch["attention_mask"].device,
+                    dtype=batch["attention_mask"].dtype,
+                )
+                batch["attention_mask"] = self._insert_tokens_2d(
+                    batch["attention_mask"], attended, insert_positions
+                )
 
         return batch, target_texts, lat, lon, non_rgb_imagery, sample_metadata
 
@@ -740,6 +756,8 @@ class Qwen3VLModule(L.LightningModule):
         datamodule = getattr(trainer, "datamodule", None) if trainer is not None else None
         if datamodule is not None and hasattr(datamodule, "set_collator"):
             datamodule.set_collator(self._collator)
+        if datamodule is not None and hasattr(datamodule, "set_validation_collator"):
+            datamodule.set_validation_collator(self._validation_collator)
         if datamodule is not None and hasattr(datamodule, "set_test_collator"):
             datamodule.set_test_collator(self._test_collator)
 
@@ -763,27 +781,10 @@ class Qwen3VLModule(L.LightningModule):
         )
         return outputs.loss
 
-    def _validation_trace_indices(self, batch: dict[str, Any], batch_idx: int) -> list[int]:
-        """Return sample indices that should be generated for qualitative traces."""
-        if not self.validation_trace_path:
-            return []
-        trainer = self._trainer_or_none()
-        if trainer is not None and not trainer.is_global_zero:
-            return []
-        if self.validation_trace_sample_ids:
-            batch_sample_ids = batch.get("sample_id")
-            if batch_sample_ids is None:
-                raise ValueError("validation_trace_sample_ids requires sample_id in validation batches")
-            return [
-                index
-                for index, sample_id in enumerate(batch_sample_ids)
-                if str(sample_id) in self._validation_trace_sample_id_set
-            ]
-        return []
-
     def _generate_for_batch(self, batch: dict[str, Any]) -> list[str]:
         """Run greedy generation on a batch and return decoded predictions."""
         gen_batch = {k: v for k, v in batch.items() if k != "labels"}
+        was_training = self.model.training
         FastVisionModel.for_inference(self.model)
         try:
             with torch.no_grad():
@@ -795,6 +796,7 @@ class Qwen3VLModule(L.LightningModule):
                 )
         finally:
             FastVisionModel.for_training(self.model)
+            self.model.train(was_training)
         input_len = gen_batch["input_ids"].shape[-1]
         predictions = []
         for i in range(generated_ids.shape[0]):
@@ -804,7 +806,18 @@ class Qwen3VLModule(L.LightningModule):
             predictions.append(text)
         return predictions
 
-    def _write_validation_trace(
+    def on_fit_start(self) -> None:
+        """Initialize the optional qualitative validation generation file."""
+        if not self.validation_generation_path:
+            return
+        trainer = self._trainer_or_none()
+        if trainer is not None and not trainer.is_global_zero:
+            return
+        output_path = Path(self.validation_generation_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("", encoding="utf-8")
+
+    def _write_validation_generations(
         self,
         *,
         predictions: list[str],
@@ -814,18 +827,18 @@ class Qwen3VLModule(L.LightningModule):
         sample_metadata: dict[str, Any],
         batch_idx: int,
     ) -> None:
-        if not self.validation_trace_path:
+        if not self.validation_generation_path:
             return
-        output_path = Path(self.validation_trace_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
         trainer = self._trainer_or_none()
+        if trainer is not None and not trainer.is_global_zero:
+            return
+        output_path = Path(self.validation_generation_path)
         global_step = int(trainer.global_step) if trainer is not None else 0
         with output_path.open("a", encoding="utf-8") as handle:
             for index, prediction in enumerate(predictions):
                 entry = {
                     "global_step": global_step,
                     "validation_batch_idx": batch_idx,
-                    "trace_index": index,
                     "prediction": prediction,
                     "target_texts": target_texts[index] if target_texts else [],
                     "location_condition": self.loc_mode,
@@ -841,12 +854,8 @@ class Qwen3VLModule(L.LightningModule):
                 handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def validation_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
-        """Validation step with loss and optional qualitative trace generation."""
-        trace_batch = None
-        trace_indices = self._validation_trace_indices(batch, batch_idx)
-        if trace_indices:
-            trace_batch = _slice_batch_indices(batch, trace_indices)
-
+        """Compute teacher-forced loss and optional prompt-only generations."""
+        generation_batch = batch.pop("validation_generation_batch", None)
         batch, _, _, _, _, _ = self._prepare_model_inputs(batch)
         batch_size = batch["input_ids"].shape[0]
         with torch.no_grad():
@@ -861,26 +870,24 @@ class Qwen3VLModule(L.LightningModule):
             sync_dist=True,
             batch_size=batch_size,
         )
-        result = {"loss": outputs.loss}
-
         self._reset_projected_token_state()
 
-        if trace_batch is not None and self.max_new_tokens > 0:
-            trace_batch, trace_targets, trace_lat, trace_lon, _, trace_metadata = (
-                self._prepare_model_inputs(trace_batch)
+        if generation_batch is not None:
+            generation_batch, target_texts, lat, lon, _, sample_metadata = (
+                self._prepare_model_inputs(generation_batch)
             )
-            trace_predictions = self._generate_for_batch(trace_batch)
-            self._write_validation_trace(
-                predictions=trace_predictions,
-                target_texts=trace_targets,
-                lat=trace_lat,
-                lon=trace_lon,
-                sample_metadata=trace_metadata,
+            predictions = self._generate_for_batch(generation_batch)
+            self._write_validation_generations(
+                predictions=predictions,
+                target_texts=target_texts,
+                lat=lat,
+                lon=lon,
+                sample_metadata=sample_metadata,
                 batch_idx=batch_idx,
             )
             self._reset_projected_token_state()
 
-        return result
+        return {"loss": outputs.loss}
 
     def _write_prediction_export(
         self,

@@ -245,3 +245,28 @@ class GeoAwareCollator:
                     batch["non_rgb_bands"] = non_rgb_bands
 
         return batch
+
+
+class ValidationGenerationCollator:
+    """Add a prompt-only sub-batch for fixed qualitative validation samples."""
+
+    def __init__(
+        self,
+        supervised_collator: GeoAwareCollator,
+        generation_collator: GeoAwareCollator,
+        sample_ids: list[str] | tuple[str, ...],
+    ) -> None:
+        self.supervised_collator = supervised_collator
+        self.generation_collator = generation_collator
+        self.sample_ids = frozenset(str(sample_id) for sample_id in sample_ids)
+
+    def __call__(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        batch = self.supervised_collator(items)
+        generation_items = [
+            item for item in items if str(item.get("sample_id")) in self.sample_ids
+        ]
+        if generation_items:
+            batch["validation_generation_batch"] = self.generation_collator(
+                generation_items
+            )
+        return batch
