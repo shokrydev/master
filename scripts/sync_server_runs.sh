@@ -44,6 +44,8 @@ Copied by default:
   outputs/evaluation/<job>/logs/ and lightweight evaluation evidence
 
 Large adapter/checkpoint files are intentionally excluded.
+Shared thumbnails under the remote finetuning output root are copied to
+outputs/thumbnails/ when present.
 EOF
 }
 
@@ -278,5 +280,28 @@ for JOB in "${JOBS[@]}"; do
         "$HOST:$SYNC_RUN_DIR/" \
         "$RUN_DEST/"
 done
+
+REMOTE_THUMBNAILS_DIR="$REMOTE_FINETUNING_OUTPUT_ROOT/thumbnails"
+if remote_dir_exists "$REMOTE_THUMBNAILS_DIR"; then
+    LOCAL_THUMBNAILS_DIR="$LOCAL_OUTPUT_ROOT/thumbnails"
+    if [ "$DRY_RUN" = false ]; then
+        mkdir -p "$LOCAL_THUMBNAILS_DIR"
+    fi
+    echo "=============================================="
+    echo "Syncing shared thumbnails"
+    echo "Destination: $LOCAL_THUMBNAILS_DIR"
+    run_rsync \
+        rsync -av --prune-empty-dirs \
+        -e "$RSYNC_SSH" \
+        --include="*/" \
+        --include="*.png" \
+        --include="*.jpg" \
+        --include="*.jpeg" \
+        --include="*.webp" \
+        --include="*.json" \
+        --exclude="*" \
+        "$HOST:$REMOTE_THUMBNAILS_DIR/" \
+        "$LOCAL_THUMBNAILS_DIR/"
+fi
 
 echo "Done."
