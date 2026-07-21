@@ -154,6 +154,9 @@ def check_env_paths() -> None:
     require_path(encoder_dir / "model.safetensors", "BigEarthNet encoder weights", directory=False)
 
     require_path(Path(require_env("SATCLIP_CHECKPOINT_PATH")), "SatCLIP checkpoint", directory=False)
+    satclip_l40_path = os.environ.get("SATCLIP_L40_CHECKPOINT_PATH")
+    if satclip_l40_path:
+        require_path(Path(satclip_l40_path), "SatCLIP L=40 checkpoint", directory=False)
 
     hf_home = Path(require_env("HF_HOME"))
     hf_home.mkdir(parents=True, exist_ok=True)

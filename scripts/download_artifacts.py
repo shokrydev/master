@@ -29,8 +29,14 @@ QWEN_REPOS = {
     "8B": "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit",
 }
 
-SATCLIP_REPO = "microsoft/SatCLIP-ViT16-L10"
-SATCLIP_FILENAME = "satclip-vit16-l10.ckpt"
+SATCLIP_VARIANTS = {
+    "l10": ("microsoft/SatCLIP-ViT16-L10", "satclip-vit16-l10.ckpt"),
+    "l40": ("microsoft/SatCLIP-ViT16-L40", "satclip-vit16-l40.ckpt"),
+}
+SATCLIP_ENV_VARS = {
+    "l10": "SATCLIP_CHECKPOINT_PATH",
+    "l40": "SATCLIP_L40_CHECKPOINT_PATH",
+}
 
 BIGEARTHNET_ENCODER_REPO = "BIFOLD-BigEarthNetv2-0/mobilevit_s-all-v0.2.0"
 BIGEARTHNET_ENCODER_FILES = ("config.json", "model.safetensors")
@@ -84,12 +90,13 @@ def download_qwen(sizes: list[str], dry_run: bool) -> None:
         print(f"Cached at: {local_path}")
 
 
-def download_satclip(dry_run: bool) -> None:
-    checkpoint_path = Path(require_env("SATCLIP_CHECKPOINT_PATH"))
-    if checkpoint_path.name != SATCLIP_FILENAME:
+def download_satclip(variant: str, dry_run: bool) -> None:
+    repo_id, filename = SATCLIP_VARIANTS[variant]
+    checkpoint_path = Path(require_env(SATCLIP_ENV_VARS[variant]))
+    if checkpoint_path.name != filename:
         raise SystemExit(
-            "SATCLIP_CHECKPOINT_PATH must end with "
-            f"{SATCLIP_FILENAME!r}; got {checkpoint_path}"
+            f"{SATCLIP_ENV_VARS[variant]} must end with "
+            f"{filename!r}; got {checkpoint_path}"
         )
 
     print(f"SatCLIP checkpoint: {checkpoint_path}")
@@ -97,15 +104,15 @@ def download_satclip(dry_run: bool) -> None:
         print("Already exists.")
         return
     if dry_run:
-        print(f"[dry-run] Would download {SATCLIP_REPO}/{SATCLIP_FILENAME}")
+        print(f"[dry-run] Would download {repo_id}/{filename}")
         return
 
     from huggingface_hub import hf_hub_download
 
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     downloaded = hf_hub_download(
-        repo_id=SATCLIP_REPO,
-        filename=SATCLIP_FILENAME,
+        repo_id=repo_id,
+        filename=filename,
         local_dir=checkpoint_path.parent,
     )
     print(f"Saved to: {downloaded}")
@@ -157,6 +164,11 @@ def parse_args() -> argparse.Namespace:
         help="Download the SatCLIP ViT16-L10 checkpoint.",
     )
     parser.add_argument(
+        "--satclip-l40",
+        action="store_true",
+        help="Download the SatCLIP ViT16-L40 checkpoint for the L=40 ablation.",
+    )
+    parser.add_argument(
         "--bigearthnet-encoder",
         action="store_true",
         help="Download the BigEarthNet MobileViT encoder config and weights.",
@@ -169,32 +181,40 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def selected_artifacts(args: argparse.Namespace) -> tuple[list[str], bool, bool]:
+def selected_artifacts(args: argparse.Namespace) -> tuple[list[str], list[str], bool]:
     if args.all:
-        return sorted(QWEN_REPOS), True, True
+        return sorted(QWEN_REPOS), ["l10"], True
 
     has_explicit_selection = (
-        args.qwen is not None or args.satclip or args.bigearthnet_encoder
+        args.qwen is not None
+        or args.satclip
+        or args.satclip_l40
+        or args.bigearthnet_encoder
     )
     if not has_explicit_selection:
-        return ["2B"], True, True
+        return ["2B"], ["l10"], True
 
     qwen_sizes: list[str] = []
     if args.qwen is not None:
         qwen_sizes = sorted(QWEN_REPOS) if not args.qwen else args.qwen
-    return qwen_sizes, args.satclip, args.bigearthnet_encoder
+    satclip_variants = []
+    if args.satclip:
+        satclip_variants.append("l10")
+    if args.satclip_l40:
+        satclip_variants.append("l40")
+    return qwen_sizes, satclip_variants, args.bigearthnet_encoder
 
 
 def main() -> None:
     args = parse_args()
     load_env(ENV_PATH)
 
-    qwen_sizes, include_satclip, include_bigearthnet_encoder = selected_artifacts(args)
+    qwen_sizes, satclip_variants, include_bigearthnet_encoder = selected_artifacts(args)
 
     if qwen_sizes:
         download_qwen(qwen_sizes, args.dry_run)
-    if include_satclip:
-        download_satclip(args.dry_run)
+    for satclip_variant in satclip_variants:
+        download_satclip(satclip_variant, args.dry_run)
     if include_bigearthnet_encoder:
         download_bigearthnet_encoder(args.dry_run)
 

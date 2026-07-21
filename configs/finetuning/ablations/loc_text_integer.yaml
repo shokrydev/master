@@ -1,0 +1,5 @@
+# Development ablation composed after loc_text.yaml.
+
+model:
+  init_args:
+    coordinates_decimal_places: 0

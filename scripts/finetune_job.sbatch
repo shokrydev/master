@@ -51,8 +51,19 @@ REQUIRED_ENV_VARS=(
     FINETUNING_OUTPUT_ROOT
     HF_HOME
 )
+USES_SATCLIP_L40=false
+for CLI_ARG in "$@"; do
+    if [ "$CLI_ARG" = "configs/finetuning/ablations/loc_embed_satclip_l40.yaml" ]; then
+        USES_SATCLIP_L40=true
+        break
+    fi
+done
 if [ "$CONDITION_CONFIG" = "configs/finetuning/loc_embed.yaml" ]; then
-    REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
+    if [ "$USES_SATCLIP_L40" = true ]; then
+        REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
+    else
+        REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
+    fi
 fi
 if [ "$CAPTION_TARGET_CONFIG" = "configs/finetuning/location_redacted_captions.yaml" ]; then
     REQUIRED_ENV_VARS+=(BENTXT_LOCATION_REDACTED_CAPTION_FILE)

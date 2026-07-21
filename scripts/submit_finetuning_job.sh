@@ -92,6 +92,23 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+for EXTRA_ARG in "${EXTRA_ARGS[@]}"; do
+    case "$EXTRA_ARG" in
+        configs/finetuning/ablations/loc_text_integer.yaml)
+            if [ "$CONDITION" != "loc_text" ]; then
+                echo "$EXTRA_ARG requires --condition loc_text."
+                exit 1
+            fi
+            ;;
+        configs/finetuning/ablations/loc_embed_*.yaml)
+            if [ "$CONDITION" != "loc_embed" ]; then
+                echo "$EXTRA_ARG requires --condition loc_embed."
+                exit 1
+            fi
+            ;;
+    esac
+done
+
 case "$CAPTION_TARGET" in
     caption)
         CAPTION_TARGET_CONFIG=""
@@ -160,8 +177,19 @@ REQUIRED_ENV_VARS=(
     FINETUNING_OUTPUT_ROOT
     HF_HOME
 )
+USES_SATCLIP_L40=false
+for EXTRA_ARG in "${EXTRA_ARGS[@]}"; do
+    if [ "$EXTRA_ARG" = "configs/finetuning/ablations/loc_embed_satclip_l40.yaml" ]; then
+        USES_SATCLIP_L40=true
+        break
+    fi
+done
 if [ "$CONDITION" = "loc_embed" ]; then
-    REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
+    if [ "$USES_SATCLIP_L40" = true ]; then
+        REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
+    else
+        REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
+    fi
 fi
 if [ "$CAPTION_TARGET" = "location_redacted_caption" ]; then
     REQUIRED_ENV_VARS+=(BENTXT_LOCATION_REDACTED_CAPTION_FILE)
