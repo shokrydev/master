@@ -1,8 +1,8 @@
 # Development ablation composed after loc_embed.yaml.
 
 paths:
-  satclip_l40_checkpoint_path: ${oc.env:SATCLIP_L40_CHECKPOINT_PATH,data/satclip/satclip-vit16-l40.ckpt}
+  satclip_checkpoint_path: ${oc.env:SATCLIP_L40_CHECKPOINT_PATH,data/satclip/satclip-vit16-l40.ckpt}
 
 model:
   init_args:
-    satclip_checkpoint: ${paths.satclip_l40_checkpoint_path}
+    satclip_checkpoint: ${paths.satclip_checkpoint_path}
