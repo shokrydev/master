@@ -537,26 +537,19 @@ class Qwen3VLModule(L.LightningModule):
         kwargs: dict[str, Any],
         tokens: torch.Tensor,
         positions: torch.Tensor,
-        has_visual: torch.Tensor,
     ) -> None:
-        """Place projected tokens after Qwen's visual-start embedding."""
+        """Replace prefix placeholders without modifying Qwen's visual block."""
         if "inputs_embeds" not in kwargs or kwargs["inputs_embeds"] is None:
             return
 
         inputs_embeds = kwargs["inputs_embeds"]
         tokens = tokens.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
         positions = positions.to(inputs_embeds.device)
-        has_visual = has_visual.to(inputs_embeds.device)
         out = inputs_embeds.clone()
         num_tokens = tokens.shape[1]
         for batch_index in range(inputs_embeds.shape[0]):
             position = int(positions[batch_index].item())
-            if bool(has_visual[batch_index]):
-                visual_start = inputs_embeds[batch_index, position + num_tokens].clone()
-                out[batch_index, position] = visual_start
-                out[batch_index, position + 1 : position + num_tokens + 1] = tokens[batch_index]
-            else:
-                out[batch_index, position : position + num_tokens] = tokens[batch_index]
+            out[batch_index, position : position + num_tokens] = tokens[batch_index]
         kwargs["inputs_embeds"] = out
 
     @staticmethod
@@ -589,11 +582,9 @@ class Qwen3VLModule(L.LightningModule):
 
         projected_tokens = []
         insert_positions = None
-        has_visual = None
 
         if location_state is not None:
             insert_positions = location_state["insert_positions"]
-            has_visual = location_state["has_visual"]
             lat = location_state["lat"]
             lon = location_state["lon"]
 
@@ -607,7 +598,6 @@ class Qwen3VLModule(L.LightningModule):
 
         if non_rgb_state is not None:
             insert_positions = non_rgb_state["insert_positions"]
-            has_visual = non_rgb_state["has_visual"]
             imagery = non_rgb_state["tensor"].to(self.device)
             bands = non_rgb_state["bands"]
             with torch.no_grad():
@@ -623,15 +613,12 @@ class Qwen3VLModule(L.LightningModule):
             kwargs,
             tokens,
             insert_positions,
-            has_visual,
         )
 
         return args, kwargs
 
-    def _compute_visual_boundary(
-        self, batch: dict[str, Any]
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return first visual-start positions and whether each sample has imagery."""
+    def _compute_visual_boundary(self, batch: dict[str, Any]) -> torch.Tensor:
+        """Return the first visual-start position, or the attended sequence end."""
         input_ids = batch.get("input_ids")
         attention_mask = batch.get("attention_mask")
         if input_ids is None:
@@ -648,7 +635,7 @@ class Qwen3VLModule(L.LightningModule):
         else:
             fallback = torch.full_like(first_visual, input_ids.shape[1])
         positions = torch.where(has_visual, first_visual, fallback)
-        return positions, has_visual
+        return positions
 
     def _prepare_model_inputs(self, batch: dict[str, Any]):
         """Strip non-model fields and set up projected token insertion state."""
@@ -681,9 +668,8 @@ class Qwen3VLModule(L.LightningModule):
 
         uses_projected_tokens = self.loc_mode == "loc_embed" or self.non_rgb_conditioning == "enabled"
         insert_positions = None
-        has_visual = None
         if uses_projected_tokens:
-            insert_positions, has_visual = self._compute_visual_boundary(batch)
+            insert_positions = self._compute_visual_boundary(batch)
 
         num_inserted_tokens = 0
         if self.non_rgb_conditioning == "enabled":
@@ -691,7 +677,6 @@ class Qwen3VLModule(L.LightningModule):
                 "tensor": non_rgb_imagery["tensor"].to(self.device),
                 "bands": non_rgb_imagery["bands"],
                 "insert_positions": insert_positions.to(self.device),
-                "has_visual": has_visual.to(self.device),
             }
             num_inserted_tokens += self.num_non_rgb_tokens
 
@@ -703,7 +688,6 @@ class Qwen3VLModule(L.LightningModule):
                 "lat": lat.to(self.device),
                 "lon": lon.to(self.device),
                 "insert_positions": insert_positions.to(self.device),
-                "has_visual": has_visual.to(self.device),
             }
             num_inserted_tokens += self.num_location_tokens
 

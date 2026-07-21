@@ -320,13 +320,12 @@ class InsertTokenHelpersTest(unittest.TestCase):
             kwargs,
             tokens,
             positions,
-            torch.tensor([True, True]),
         )
 
         expected_embeds = torch.tensor(
             [
-                [[1.0], [7.0], [90.0], [91.0], [2.0], [3.0]],
-                [[10.0], [11.0], [12.0], [7.0], [80.0], [81.0]],
+                [[1.0], [90.0], [91.0], [7.0], [2.0], [3.0]],
+                [[10.0], [11.0], [12.0], [80.0], [81.0], [7.0]],
             ]
         )
         self.assertTrue(torch.equal(kwargs["inputs_embeds"], expected_embeds))
@@ -340,7 +339,6 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "tensor": torch.ones(2, 12, 2, 2),
             "bands": ["VV", "VH"],
             "insert_positions": torch.tensor([1, 3]),
-            "has_visual": torch.tensor([True, True]),
         }
 
         class FakeEncoder:
@@ -373,8 +371,8 @@ class InsertTokenHelpersTest(unittest.TestCase):
 
         expected_embeds = torch.tensor(
             [
-                [[1.0], [7.0], [90.0], [91.0], [2.0], [3.0]],
-                [[10.0], [11.0], [12.0], [7.0], [80.0], [81.0]],
+                [[1.0], [90.0], [91.0], [7.0], [2.0], [3.0]],
+                [[10.0], [11.0], [12.0], [80.0], [81.0], [7.0]],
             ]
         )
         self.assertTrue(torch.equal(kwargs["inputs_embeds"], expected_embeds))
@@ -390,13 +388,11 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "tensor": torch.ones(1, 12, 2, 2),
             "bands": None,
             "insert_positions": torch.tensor([1]),
-            "has_visual": torch.tensor([True]),
         }
         module._location_insertion_state = {
             "lat": torch.tensor([1.0], dtype=torch.float64),
             "lon": torch.tensor([2.0], dtype=torch.float64),
             "insert_positions": torch.tensor([1]),
-            "has_visual": torch.tensor([True]),
         }
         module.non_rgb_encoder = lambda imagery, bands: torch.zeros(1, 1, 5)
         module.non_rgb_modality_projection = lambda features: torch.tensor([[[80.0]]])
@@ -409,7 +405,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
 
         module._projected_token_insertion_hook(None, (), kwargs)
 
-        expected = torch.tensor([[[1.0], [7.0], [90.0], [80.0], [2.0]]])
+        expected = torch.tensor([[[1.0], [90.0], [80.0], [7.0], [2.0]]])
         self.assertTrue(torch.equal(kwargs["inputs_embeds"], expected))
 
     def test_projected_token_hook_runs_with_empty_cache_and_skips_filled_cache(self):
@@ -420,7 +416,6 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "lat": torch.tensor([1.0], dtype=torch.float64),
             "lon": torch.tensor([2.0], dtype=torch.float64),
             "insert_positions": torch.tensor([1]),
-            "has_visual": torch.tensor([True]),
         }
         module.satclip = lambda coords: coords.float()
         module.location_modality_projection = lambda features: features[:, :1].unsqueeze(-1)
@@ -437,7 +432,8 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "past_key_values": FakeCache(0),
         }
         module._projected_token_insertion_hook(None, (), prefill)
-        self.assertEqual(prefill["inputs_embeds"][0, 2, 0].item(), 2.0)
+        self.assertEqual(prefill["inputs_embeds"][0, 1, 0].item(), 2.0)
+        self.assertEqual(prefill["inputs_embeds"][0, 2, 0].item(), 7.0)
 
         decode = {
             "inputs_embeds": torch.zeros(1, 1, 1),
@@ -454,7 +450,6 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "lat": torch.tensor([1.0, 3.0], dtype=torch.float64),
             "lon": torch.tensor([2.0, 4.0], dtype=torch.float64),
             "insert_positions": torch.tensor([1, 1]),
-            "has_visual": torch.tensor([True, True]),
         }
         module.satclip = lambda coords: coords.float()
         module.location_modality_projection = lambda features: features[:, :1].unsqueeze(-1)
@@ -466,14 +461,58 @@ class InsertTokenHelpersTest(unittest.TestCase):
 
         module._projected_token_insertion_hook(None, (), kwargs)
 
-        self.assertEqual(kwargs["inputs_embeds"][0, 2, 0].item(), 2.0)
-        self.assertEqual(kwargs["inputs_embeds"][1, 2, 0].item(), 4.0)
+        self.assertEqual(kwargs["inputs_embeds"][0, 1, 0].item(), 2.0)
+        self.assertEqual(kwargs["inputs_embeds"][1, 1, 0].item(), 4.0)
+        self.assertEqual(kwargs["inputs_embeds"][0, 2, 0].item(), 7.0)
+        self.assertEqual(kwargs["inputs_embeds"][1, 2, 0].item(), 7.0)
         self.assertFalse(
             torch.equal(kwargs["inputs_embeds"][0], kwargs["inputs_embeds"][1])
         )
 
 
 class PrepareModelInputsTest(unittest.TestCase):
+    def test_prepare_and_replace_keep_native_visual_boundary_aligned(self):
+        module = _build_encoder_test_module(num_location_tokens=2)
+        batch = {
+            "input_ids": torch.tensor([[101, 997, 999, 999, 201]]),
+            "attention_mask": torch.ones(1, 5, dtype=torch.long),
+            "mm_token_type_ids": torch.tensor([[0, 0, 1, 1, 0]]),
+            "labels": torch.tensor([[11, 12, 13, 14, 15]]),
+            "lat": torch.tensor([48.0], dtype=torch.float64),
+            "lon": torch.tensor([12.0], dtype=torch.float64),
+        }
+
+        model_batch, _, _, _, _, _ = module._prepare_model_inputs(batch)
+
+        self.assertTrue(
+            torch.equal(
+                model_batch["input_ids"],
+                torch.tensor([[101, 0, 0, 997, 999, 999, 201]]),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                model_batch["mm_token_type_ids"],
+                torch.tensor([[0, 0, 0, 0, 1, 1, 0]]),
+            )
+        )
+
+        module.satclip = lambda coords: coords.float()
+        module.location_modality_projection = lambda features: torch.tensor(
+            [[[90.0], [91.0]]]
+        )
+        kwargs = {
+            "inputs_embeds": model_batch["input_ids"].float().unsqueeze(-1),
+        }
+        module._projected_token_insertion_hook(None, (), kwargs)
+
+        self.assertTrue(
+            torch.equal(
+                kwargs["inputs_embeds"].squeeze(-1),
+                torch.tensor([[101.0, 90.0, 91.0, 997.0, 999.0, 999.0, 201.0]]),
+            )
+        )
+
     def test_prepare_model_inputs_inserts_ignore_labels_at_visual_boundary(self):
         module = _build_encoder_test_module(num_location_tokens=2)
         batch = {
