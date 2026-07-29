@@ -160,7 +160,9 @@ RUN_KIND="full"
 if [ -n "$SMOKE_CONFIG" ]; then
     RUN_KIND="smoke"
 fi
-if [ -z "$FIT_VALIDATION_CONFIG" ] && [ "$SIZE" = "2B" ] && [ "$RUN_KIND" = "full" ]; then
+if [ -z "$FIT_VALIDATION_CONFIG" ] \
+    && { [ "$SIZE" = "2B" ] || [ "$SIZE" = "4B" ]; } \
+    && [ "$RUN_KIND" = "full" ]; then
     FIT_VALIDATION_CONFIG="configs/finetuning/bigearthnet_txt_bounded_validation_monitor.yaml"
 fi
 if [ "$FIT_VALIDATION_CONFIG" = "configs/finetuning/bigearthnet_txt_early_convergence_diagnostic.yaml" ]; then
