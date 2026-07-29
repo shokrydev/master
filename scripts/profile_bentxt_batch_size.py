@@ -90,7 +90,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--condition",
-        choices=("no_loc", "loc_text", "loc_embed"),
+        choices=("no_loc", "loc_text", "loc_embed", "loc_encoding"),
         default="loc_embed",
         help="Location condition to profile. loc_embed is the heaviest core condition.",
     )
@@ -391,6 +391,9 @@ def main_single(args: argparse.Namespace) -> dict[str, Any]:
         ),
         location_embed_marker=(
             DEFAULT_LOCATION_EMBED_MARKER if args.condition == "loc_embed" else None
+        ),
+        location_encoding_scope=(
+            "all_visual" if args.condition == "loc_encoding" else None
         ),
         non_rgb_conditioning="enabled",
         non_rgb_encoder_dir=encoder_dir,

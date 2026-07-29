@@ -61,10 +61,13 @@ class Qwen3VLModule(L.LightningModule):
         validation_generation_sample_ids: list[str] | None = None,
         validation_generation_path: str | None = None,
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
-        loc_mode: Literal["no_loc", "loc_text", "loc_embed"] = "no_loc",
+        loc_mode: Literal["no_loc", "loc_text", "loc_embed", "loc_encoding"] = "no_loc",
         location_text_template: str | None = None,
         coordinates_decimal_places: int = 0,
         location_embed_marker: str | None = None,
+        location_encoding_scope: Literal["all_visual", "s1s2"] | None = None,
+        location_encoding_scale_init: float = 0.1,
+        location_encoding_learned_scale: bool = True,
         non_rgb_conditioning: Literal["disabled", "enabled"] = "disabled",
         non_rgb_encoder_dir: str | None = None,
         non_rgb_encoder_feature_dim: int | None = None,
@@ -109,7 +112,8 @@ class Qwen3VLModule(L.LightningModule):
             validation_generation_path: JSONL file for qualitative validation
                 generations.
             system_prompt: Optional system message injected during chat formatting.
-            loc_mode: Location conditioning mode ("no_loc", "loc_text", "loc_embed")
+            loc_mode: Location conditioning mode ("no_loc", "loc_text",
+                "loc_embed", "loc_encoding").
             location_text_template: Format string appended to the user prompt when
                 `loc_mode="loc_text"`. Coordinate formatting is handled by the
                 shared collator.
@@ -117,6 +121,12 @@ class Qwen3VLModule(L.LightningModule):
                 `{location}` field in `location_text_template`.
             location_embed_marker: Text marker appended to the prompt before
                 projected SatCLIP tokens when `loc_mode="loc_embed"`.
+            location_encoding_scope: Existing embeddings that receive direct
+                scene-coordinate encoding when `loc_mode="loc_encoding"`.
+            location_encoding_scale_init: Initial amplitude of the deterministic
+                scene-coordinate encoding.
+            location_encoding_learned_scale: Whether the encoding amplitude is
+                trainable.
             non_rgb_conditioning: Whether non-RGB imagery conditions Qwen.
                 "disabled" strips non-RGB imagery before Qwen; "enabled" activates
                 the non-RGB encoder/projection path.
@@ -142,7 +152,7 @@ class Qwen3VLModule(L.LightningModule):
         """
         super().__init__()
 
-        if loc_mode not in {"no_loc", "loc_text", "loc_embed"}:
+        if loc_mode not in {"no_loc", "loc_text", "loc_embed", "loc_encoding"}:
             raise ValueError(f"Unsupported loc_mode: {loc_mode}")
         if non_rgb_conditioning not in {"disabled", "enabled"}:
             raise ValueError(f"Unsupported non_rgb_conditioning: {non_rgb_conditioning}")
@@ -158,6 +168,25 @@ class Qwen3VLModule(L.LightningModule):
             raise ValueError("loc_mode='loc_embed' requires location_embed_marker")
         if loc_mode != "loc_embed" and location_embed_marker is not None:
             raise ValueError("location_embed_marker is only used when loc_mode='loc_embed'")
+        if loc_mode == "loc_encoding" and location_encoding_scope not in {
+            "all_visual",
+            "s1s2",
+        }:
+            raise ValueError(
+                "loc_mode='loc_encoding' requires location_encoding_scope to "
+                "be 'all_visual' or 's1s2'"
+            )
+        if loc_mode != "loc_encoding" and location_encoding_scope is not None:
+            raise ValueError(
+                "location_encoding_scope is only used when loc_mode='loc_encoding'"
+            )
+        if (
+            not math.isfinite(location_encoding_scale_init)
+            or location_encoding_scale_init <= 0
+        ):
+            raise ValueError(
+                "location_encoding_scale_init must be a finite positive number"
+            )
         if location_projection_lr_multiplier <= 0:
             raise ValueError("location_projection_lr_multiplier must be positive")
         if non_rgb_projection_lr_multiplier <= 0:
@@ -223,6 +252,9 @@ class Qwen3VLModule(L.LightningModule):
         self.location_text_template = location_text_template
         self.coordinates_decimal_places = coordinates_decimal_places
         self.location_embed_marker = location_embed_marker
+        self.location_encoding_scope = location_encoding_scope
+        self.location_encoding_scale_init = float(location_encoding_scale_init)
+        self.location_encoding_learned_scale = location_encoding_learned_scale
         self.non_rgb_conditioning = non_rgb_conditioning
         self.non_rgb_encoder_dir = str(non_rgb_encoder_dir) if non_rgb_encoder_dir else None
         self.non_rgb_encoder_feature_dim = non_rgb_encoder_feature_dim
@@ -247,11 +279,14 @@ class Qwen3VLModule(L.LightningModule):
         # Projected side-modality components, initialized in setup when enabled.
         self.satclip = None
         self.location_modality_projection = None
+        self.scene_location_encoding = None
         self.non_rgb_encoder = None
         self.non_rgb_modality_projection = None
-        self._geo_hook_handle = None
+        self._decoder_input_hook_handle = None
         self._location_insertion_state = None
+        self._location_encoding_state = None
         self._non_rgb_insertion_state = None
+        self._location_encoding_norm_logged = False
 
         self._prediction_export_count = 0
 
@@ -369,6 +404,10 @@ class Qwen3VLModule(L.LightningModule):
             self._setup_loc_embed()
             if self.adapter_dir is not None:
                 self._load_location_projection_artifacts()
+        elif self.loc_mode == "loc_encoding":
+            self._setup_scene_location_encoding()
+            if self.adapter_dir is not None:
+                self._load_scene_location_encoding_artifacts()
         if self.non_rgb_conditioning == "enabled":
             self._setup_non_rgb_conditioning()
             if self.adapter_dir is not None:
@@ -377,11 +416,18 @@ class Qwen3VLModule(L.LightningModule):
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in self.model.parameters())
         location_proj_params = 0
+        location_encoding_params = 0
         non_rgb_proj_params = 0
         if self.location_modality_projection is not None:
             location_proj_params = sum(p.numel() for p in self.location_modality_projection.parameters())
             trainable_params += location_proj_params
             total_params += location_proj_params
+        if getattr(self, "scene_location_encoding", None) is not None:
+            location_encoding_params = sum(
+                p.numel() for p in self.scene_location_encoding.parameters()
+            )
+            trainable_params += location_encoding_params
+            total_params += location_encoding_params
         if self.non_rgb_modality_projection is not None:
             non_rgb_proj_params = sum(p.numel() for p in self.non_rgb_modality_projection.parameters())
             trainable_params += non_rgb_proj_params
@@ -398,6 +444,14 @@ class Qwen3VLModule(L.LightningModule):
                     "LocationModalityProjection LR: "
                     f"{location_lr:g} ({self.location_projection_lr_multiplier:g}x)"
                 )
+        if self.scene_location_encoding is not None:
+            self._print(
+                "SceneLocationEncoding params: "
+                f"{location_encoding_params:,}; "
+                f"scope={self.location_encoding_scope}; "
+                f"scale_init={self.location_encoding_scale_init:g}; "
+                f"learned_scale={self.location_encoding_learned_scale}"
+            )
         if self.non_rgb_modality_projection is not None:
             self._print(f"NonRGBModalityProjection params: {non_rgb_proj_params:,}")
             if self.non_rgb_projection_lr_multiplier != 1.0:
@@ -419,13 +473,13 @@ class Qwen3VLModule(L.LightningModule):
             return int(config.text_config.hidden_size)
         return int(config.hidden_size)
 
-    def _register_projected_token_hook(self) -> None:
-        """Register the shared decoder hook used by projected side modalities."""
-        if self._geo_hook_handle is not None:
+    def _register_decoder_input_hook(self) -> None:
+        """Register the shared decoder-input conditioning hook."""
+        if self._decoder_input_hook_handle is not None:
             return
         language_model = self.model.base_model.model.model.language_model
-        self._geo_hook_handle = language_model.register_forward_pre_hook(
-            self._projected_token_insertion_hook, with_kwargs=True
+        self._decoder_input_hook_handle = language_model.register_forward_pre_hook(
+            self._decoder_input_conditioning_hook, with_kwargs=True
         )
         self._print(f"Registered projected token hook on {type(language_model).__name__}")
 
@@ -446,6 +500,46 @@ class Qwen3VLModule(L.LightningModule):
 
         state_dict = load_file(projection_path, device=str(self.device))
         self.non_rgb_modality_projection.load_state_dict(state_dict)
+
+    def get_scene_location_encoding_manifest(self) -> dict[str, object] | None:
+        if self.scene_location_encoding is None:
+            return None
+        return self.scene_location_encoding.manifest(
+            scope=self.location_encoding_scope,
+        )
+
+    def _load_scene_location_encoding_artifacts(self) -> None:
+        encoding_path = Path(self.adapter_dir) / "location_encoding.safetensors"
+        manifest_path = Path(self.adapter_dir) / "location_encoding_config.json"
+        if not encoding_path.is_file():
+            raise FileNotFoundError(
+                f"Missing scene-location encoding artifact: {encoding_path}"
+            )
+        if not manifest_path.is_file():
+            raise FileNotFoundError(
+                f"Missing scene-location encoding manifest: {manifest_path}"
+            )
+
+        actual_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected_manifest = self.get_scene_location_encoding_manifest()
+        if actual_manifest != expected_manifest:
+            raise ValueError(
+                "Scene-location encoding config does not match the saved adapter: "
+                f"expected {expected_manifest}, found {actual_manifest}"
+            )
+
+        state_dict = load_file(encoding_path, device=str(self.device))
+        self.scene_location_encoding.load_state_dict(state_dict)
+
+    def _setup_scene_location_encoding(self) -> None:
+        from src.models.scene_location_encoding import SceneLocationEncoding
+
+        self.scene_location_encoding = SceneLocationEncoding(
+            hidden_size=self._get_text_hidden_size(),
+            scale_init=self.location_encoding_scale_init,
+            learned_scale=self.location_encoding_learned_scale,
+        ).to(self.device)
+        self._register_decoder_input_hook()
 
     def _setup_non_rgb_conditioning(self) -> None:
         """Initialize frozen BigEarthNet encoder and trainable non-RGB projection."""
@@ -485,7 +579,7 @@ class Qwen3VLModule(L.LightningModule):
             hidden_size=self._get_text_hidden_size(),
             num_tokens=self.num_non_rgb_tokens,
         ).to(self.device)
-        self._register_projected_token_hook()
+        self._register_decoder_input_hook()
         self._print(f"NonRGBModalityProjection: {encoder_dim} -> hidden x {self.num_non_rgb_tokens}")
 
     def _setup_loc_embed(self):
@@ -511,7 +605,7 @@ class Qwen3VLModule(L.LightningModule):
             num_tokens=self.num_location_tokens,
         ).to(self.device)
 
-        self._register_projected_token_hook()
+        self._register_decoder_input_hook()
         self._print(
             f"LocationModalityProjection: "
             f"{self.satclip_dim} -> {hidden_size} x {self.num_location_tokens}"
@@ -568,11 +662,12 @@ class Qwen3VLModule(L.LightningModule):
                 return int(first_layer[0].shape[-2]) > 0
         return True
 
-    def _projected_token_insertion_hook(self, module, args, kwargs):
-        """Forward pre-hook that inserts projected side-modality tokens."""
-        location_state = self._location_insertion_state
-        non_rgb_state = self._non_rgb_insertion_state
-        if location_state is None and non_rgb_state is None:
+    def _decoder_input_conditioning_hook(self, module, args, kwargs):
+        """Replace projected tokens and apply optional scene-location encoding."""
+        location_state = getattr(self, "_location_insertion_state", None)
+        encoding_state = getattr(self, "_location_encoding_state", None)
+        non_rgb_state = getattr(self, "_non_rgb_insertion_state", None)
+        if location_state is None and encoding_state is None and non_rgb_state is None:
             return args, kwargs
 
         # Replace placeholders during training and generation prefill, but not
@@ -605,17 +700,134 @@ class Qwen3VLModule(L.LightningModule):
             non_rgb_tokens = self.non_rgb_modality_projection(non_rgb_features)
             projected_tokens.append(non_rgb_tokens)
 
-        if not projected_tokens:
-            return args, kwargs
+        if projected_tokens:
+            tokens = torch.cat(projected_tokens, dim=1)
+            self._replace_projected_token_placeholders(
+                kwargs,
+                tokens,
+                insert_positions,
+            )
 
-        tokens = torch.cat(projected_tokens, dim=1)
-        self._replace_projected_token_placeholders(
-            kwargs,
-            tokens,
-            insert_positions,
-        )
+        if encoding_state is not None:
+            self._apply_scene_location_encoding(
+                kwargs,
+                encoding_state=encoding_state,
+                non_rgb_state=non_rgb_state,
+            )
 
         return args, kwargs
+
+    def _apply_scene_location_encoding(
+        self,
+        kwargs: dict[str, Any],
+        *,
+        encoding_state: dict[str, torch.Tensor],
+        non_rgb_state: dict[str, Any] | None,
+    ) -> None:
+        inputs_embeds = kwargs.get("inputs_embeds")
+        if inputs_embeds is None:
+            raise ValueError(
+                "loc_mode='loc_encoding' requires language-model inputs_embeds"
+            )
+        if self.location_encoding_scope not in {"all_visual", "s1s2"}:
+            raise ValueError(
+                f"Unsupported location encoding scope: {self.location_encoding_scope}"
+            )
+
+        native_visual_mask = kwargs.get("visual_pos_masks")
+        if native_visual_mask is None:
+            raise ValueError(
+                "Visual location encoding requires Qwen visual_pos_masks"
+            )
+        if native_visual_mask.shape != inputs_embeds.shape[:2]:
+            raise ValueError(
+                "visual_pos_masks shape does not match inputs_embeds: "
+                f"{tuple(native_visual_mask.shape)} != "
+                f"{tuple(inputs_embeds.shape[:2])}"
+            )
+
+        native_visual_mask = native_visual_mask.to(
+            device=inputs_embeds.device,
+            dtype=torch.bool,
+        )
+        if not native_visual_mask.any(dim=1).all():
+            raise ValueError(
+                "Visual location encoding requires native visual "
+                "content positions for every sample"
+            )
+        target_mask = (
+            native_visual_mask.clone()
+            if self.location_encoding_scope == "all_visual"
+            else torch.zeros_like(native_visual_mask)
+        )
+        non_rgb_mask = torch.zeros_like(target_mask)
+        if self.location_encoding_scope == "s1s2" and non_rgb_state is None:
+            raise ValueError(
+                "location_encoding_scope='s1s2' requires enabled S1/S2 conditioning"
+            )
+        if non_rgb_state is not None:
+            positions = non_rgb_state["insert_positions"].to(inputs_embeds.device)
+            for batch_index in range(inputs_embeds.shape[0]):
+                position = int(positions[batch_index].item())
+                end = position + self.num_non_rgb_tokens
+                if position < 0 or end > inputs_embeds.shape[1]:
+                    raise ValueError(
+                        "S1/S2 token range falls outside inputs_embeds: "
+                        f"[{position}, {end}) for length {inputs_embeds.shape[1]}"
+                    )
+                if native_visual_mask[batch_index, position:end].any():
+                    raise ValueError(
+                        "S1/S2 token range overlaps native visual content positions"
+                    )
+                target_mask[batch_index, position:end] = True
+                non_rgb_mask[batch_index, position:end] = True
+
+        lat = encoding_state["lat"].to(inputs_embeds.device)
+        lon = encoding_state["lon"].to(inputs_embeds.device)
+        geo_encoding = self.scene_location_encoding(lat, lon).to(
+            dtype=inputs_embeds.dtype
+        )
+        if geo_encoding.shape != (
+            inputs_embeds.shape[0],
+            inputs_embeds.shape[2],
+        ):
+            raise ValueError(
+                "Scene-location encoding shape does not match inputs_embeds: "
+                f"{tuple(geo_encoding.shape)} != "
+                f"{(inputs_embeds.shape[0], inputs_embeds.shape[2])}"
+            )
+
+        if not getattr(self, "_location_encoding_norm_logged", False):
+            with torch.no_grad():
+                rgb_rms = (
+                    inputs_embeds[native_visual_mask].float().square().mean().sqrt()
+                )
+                non_rgb_rms = (
+                    inputs_embeds[non_rgb_mask].float().square().mean().sqrt()
+                    if non_rgb_mask.any()
+                    else None
+                )
+                encoding_rms = geo_encoding.float().square().mean().sqrt()
+                scale = self.scene_location_encoding.scale.detach().float()
+            non_rgb_rms_text = (
+                f"{float(non_rgb_rms):.6g}" if non_rgb_rms is not None else "n/a"
+            )
+            message = (
+                "SceneLocationEncoding first-batch RMS: "
+                f"rgb={float(rgb_rms):.6g}, "
+                f"s1s2={non_rgb_rms_text}, "
+                f"scaled_encoding={float(encoding_rms):.6g}, "
+                f"scale={float(scale):.6g}, "
+                f"rgb_tokens={int(native_visual_mask.sum())}, "
+                f"s1s2_tokens={int(non_rgb_mask.sum())}"
+            )
+            self._print(message)
+            self._location_encoding_norm_logged = True
+
+        kwargs["inputs_embeds"] = inputs_embeds + (
+            target_mask.unsqueeze(-1).to(inputs_embeds.dtype)
+            * geo_encoding.unsqueeze(1)
+        )
 
     def _compute_visual_boundary(self, batch: dict[str, Any]) -> torch.Tensor:
         """Return the first visual-start position, or the attended sequence end."""
@@ -639,7 +851,7 @@ class Qwen3VLModule(L.LightningModule):
 
     def _prepare_model_inputs(self, batch: dict[str, Any]):
         """Strip non-model fields and set up projected token insertion state."""
-        self._reset_projected_token_state()
+        self._reset_decoder_conditioning_state()
         lat = batch.pop("lat", None)
         lon = batch.pop("lon", None)
         target_texts = batch.pop("target_texts", None)
@@ -690,6 +902,15 @@ class Qwen3VLModule(L.LightningModule):
                 "insert_positions": insert_positions.to(self.device),
             }
             num_inserted_tokens += self.num_location_tokens
+        elif self.loc_mode == "loc_encoding":
+            if lat is None or lon is None:
+                raise ValueError(
+                    "loc_mode='loc_encoding' requires both lat and lon in the batch"
+                )
+            self._location_encoding_state = {
+                "lat": lat.to(self.device),
+                "lon": lon.to(self.device),
+            }
 
         if num_inserted_tokens > 0 and "labels" in batch:
             B = batch["labels"].shape[0]
@@ -746,8 +967,9 @@ class Qwen3VLModule(L.LightningModule):
 
         return batch, target_texts, lat, lon, non_rgb_imagery, sample_metadata
 
-    def _reset_projected_token_state(self) -> None:
+    def _reset_decoder_conditioning_state(self) -> None:
         self._location_insertion_state = None
+        self._location_encoding_state = None
         self._non_rgb_insertion_state = None
 
     def _set_datamodule_collator(self):
@@ -772,7 +994,7 @@ class Qwen3VLModule(L.LightningModule):
         batch, _, _, _, _, _ = self._prepare_model_inputs(batch)
         batch_size = batch["input_ids"].shape[0]
         outputs = self.model(**batch)
-        self._reset_projected_token_state()
+        self._reset_decoder_conditioning_state()
         self.log(
             "train/loss",
             outputs.loss,
@@ -781,6 +1003,15 @@ class Qwen3VLModule(L.LightningModule):
             prog_bar=True,
             batch_size=batch_size,
         )
+        if getattr(self, "scene_location_encoding", None) is not None:
+            self.log(
+                "train/location_encoding_scale",
+                self.scene_location_encoding.scale,
+                on_step=True,
+                on_epoch=False,
+                prog_bar=False,
+                batch_size=batch_size,
+            )
         return outputs.loss
 
     def _generate_for_batch(self, batch: dict[str, Any]) -> list[str]:
@@ -847,6 +1078,11 @@ class Qwen3VLModule(L.LightningModule):
                     "model_name_or_path": self.model_name_or_path,
                     "max_new_tokens": self.max_new_tokens,
                 }
+                location_encoding_scope = getattr(
+                    self, "location_encoding_scope", None
+                )
+                if location_encoding_scope is not None:
+                    entry["location_encoding_scope"] = location_encoding_scope
                 for key, values in sample_metadata.items():
                     if values is not None:
                         entry[key] = values[index]
@@ -871,7 +1107,7 @@ class Qwen3VLModule(L.LightningModule):
             prog_bar=True,
             batch_size=batch_size,
         )
-        self._reset_projected_token_state()
+        self._reset_decoder_conditioning_state()
 
         if generation_batch is not None:
             generation_batch = {
@@ -890,7 +1126,7 @@ class Qwen3VLModule(L.LightningModule):
                 sample_metadata=sample_metadata,
                 batch_idx=batch_idx,
             )
-            self._reset_projected_token_state()
+            self._reset_decoder_conditioning_state()
 
         return {"loss": outputs.loss}
 
@@ -916,6 +1152,11 @@ class Qwen3VLModule(L.LightningModule):
                     "model_name_or_path": self.model_name_or_path,
                     "adapter_dir": self.adapter_dir,
                 }
+                location_encoding_scope = getattr(
+                    self, "location_encoding_scope", None
+                )
+                if location_encoding_scope is not None:
+                    entry["location_encoding_scope"] = location_encoding_scope
                 if self.run_label is not None:
                     entry["run_label"] = self.run_label
                 if self.model_size is not None:
@@ -970,7 +1211,7 @@ class Qwen3VLModule(L.LightningModule):
             )
             result = {"loss": outputs.loss}
 
-        self._reset_projected_token_state()
+        self._reset_decoder_conditioning_state()
         return result
 
     def on_test_epoch_end(self) -> None:
@@ -987,6 +1228,7 @@ class Qwen3VLModule(L.LightningModule):
         no_decay_params: list[torch.nn.Parameter] = []
         location_decay_params: list[torch.nn.Parameter] = []
         location_no_decay_params: list[torch.nn.Parameter] = []
+        location_encoding_no_decay_params: list[torch.nn.Parameter] = []
         non_rgb_decay_params: list[torch.nn.Parameter] = []
         non_rgb_no_decay_params: list[torch.nn.Parameter] = []
 
@@ -995,9 +1237,13 @@ class Qwen3VLModule(L.LightningModule):
             param: torch.nn.Parameter,
             *,
             location_projection: bool = False,
+            location_encoding: bool = False,
             non_rgb_projection: bool = False,
         ) -> None:
             if not param.requires_grad:
+                return
+            if location_encoding:
+                location_encoding_no_decay_params.append(param)
                 return
             if "bias" in name or "LayerNorm" in name or "layer_norm" in name:
                 if location_projection:
@@ -1023,6 +1269,13 @@ class Qwen3VLModule(L.LightningModule):
                     f"location_modality_projection.{name}",
                     param,
                     location_projection=True,
+                )
+        if self.scene_location_encoding is not None:
+            for name, param in self.scene_location_encoding.named_parameters():
+                add_param(
+                    f"scene_location_encoding.{name}",
+                    param,
+                    location_encoding=True,
                 )
         if self.non_rgb_modality_projection is not None:
             for name, param in self.non_rgb_modality_projection.named_parameters():
@@ -1058,6 +1311,12 @@ class Qwen3VLModule(L.LightningModule):
                 "params": location_no_decay_params,
                 "weight_decay": 0.0,
                 "lr": location_lr,
+            },
+            {
+                "name": "location_encoding_no_decay",
+                "params": location_encoding_no_decay_params,
+                "weight_decay": 0.0,
+                "lr": self.learning_rate,
             },
             {
                 "name": "non_rgb_projection_decay",

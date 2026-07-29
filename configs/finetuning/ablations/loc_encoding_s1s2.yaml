@@ -1,0 +1,5 @@
+# Add scene-geolocation encoding only to the projected S1/S2 tokens.
+
+model:
+  init_args:
+    location_encoding_scope: s1s2

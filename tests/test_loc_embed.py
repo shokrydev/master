@@ -10,6 +10,8 @@ from pathlib import Path
 import torch
 from safetensors.torch import save_file
 
+from src.models.scene_location_encoding import SceneLocationEncoding
+
 
 def _install_qwen3_test_stubs():
     lightning = types.ModuleType("lightning")
@@ -202,7 +204,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
         )
         module._generate_for_batch = lambda batch: ["generated answer"]
         module._print = lambda *args, **kwargs: None
-        module._reset_projected_token_state = lambda: None
+        module._reset_decoder_conditioning_state = lambda: None
         exported = {}
         module._write_prediction_export = lambda **kwargs: exported.update(kwargs)
 
@@ -244,7 +246,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
         module._prepare_model_inputs = prepare
         module.model = FakeModel()
         module.log = lambda *args, **kwargs: None
-        module._reset_projected_token_state = lambda: None
+        module._reset_decoder_conditioning_state = lambda: None
         module._generate_for_batch = lambda batch: ["generated answer"]
         written = {}
         module._write_validation_generations = lambda **kwargs: written.update(kwargs)
@@ -367,7 +369,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "attention_mask": torch.ones(2, 6, dtype=torch.long),
         }
 
-        module._projected_token_insertion_hook(None, (), kwargs)
+        module._decoder_input_conditioning_hook(None, (), kwargs)
 
         expected_embeds = torch.tensor(
             [
@@ -403,7 +405,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "inputs_embeds": torch.tensor([[[1.0], [0.0], [0.0], [7.0], [2.0]]])
         }
 
-        module._projected_token_insertion_hook(None, (), kwargs)
+        module._decoder_input_conditioning_hook(None, (), kwargs)
 
         expected = torch.tensor([[[1.0], [90.0], [80.0], [7.0], [2.0]]])
         self.assertTrue(torch.equal(kwargs["inputs_embeds"], expected))
@@ -431,7 +433,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "inputs_embeds": torch.tensor([[[0.0], [0.0], [7.0], [0.0]]]),
             "past_key_values": FakeCache(0),
         }
-        module._projected_token_insertion_hook(None, (), prefill)
+        module._decoder_input_conditioning_hook(None, (), prefill)
         self.assertEqual(prefill["inputs_embeds"][0, 1, 0].item(), 2.0)
         self.assertEqual(prefill["inputs_embeds"][0, 2, 0].item(), 7.0)
 
@@ -439,7 +441,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "inputs_embeds": torch.zeros(1, 1, 1),
             "past_key_values": FakeCache(3),
         }
-        module._projected_token_insertion_hook(None, (), decode)
+        module._decoder_input_conditioning_hook(None, (), decode)
         self.assertTrue(torch.equal(decode["inputs_embeds"], torch.zeros(1, 1, 1)))
 
     def test_projected_location_placeholders_change_with_coordinates(self):
@@ -459,7 +461,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
             )
         }
 
-        module._projected_token_insertion_hook(None, (), kwargs)
+        module._decoder_input_conditioning_hook(None, (), kwargs)
 
         self.assertEqual(kwargs["inputs_embeds"][0, 1, 0].item(), 2.0)
         self.assertEqual(kwargs["inputs_embeds"][1, 1, 0].item(), 4.0)
@@ -504,7 +506,7 @@ class PrepareModelInputsTest(unittest.TestCase):
         kwargs = {
             "inputs_embeds": model_batch["input_ids"].float().unsqueeze(-1),
         }
-        module._projected_token_insertion_hook(None, (), kwargs)
+        module._decoder_input_conditioning_hook(None, (), kwargs)
 
         self.assertTrue(
             torch.equal(
@@ -796,6 +798,19 @@ class AdapterArtifactSetupTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "loc_mode='loc_embed'"):
             Qwen3VLModule(location_embed_marker="Scene coordinates:")
 
+    def test_loc_encoding_requires_supported_scope(self):
+        with self.assertRaisesRegex(ValueError, "location_encoding_scope"):
+            Qwen3VLModule(loc_mode="loc_encoding")
+        with self.assertRaisesRegex(ValueError, "location_encoding_scope"):
+            Qwen3VLModule(
+                loc_mode="loc_encoding",
+                location_encoding_scope="text",
+            )
+
+    def test_location_encoding_scope_requires_loc_encoding_mode(self):
+        with self.assertRaisesRegex(ValueError, "loc_mode='loc_encoding'"):
+            Qwen3VLModule(location_encoding_scope="all_visual")
+
     def test_location_projection_lr_multiplier_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "location_projection_lr_multiplier"):
             Qwen3VLModule(location_projection_lr_multiplier=0.0)
@@ -904,7 +919,7 @@ class AdapterArtifactSetupTest(unittest.TestCase):
             module.non_rgb_encoder_feature_dim = 512
             module.num_non_rgb_tokens = 16
             module.device = torch.device("cpu")
-            module._geo_hook_handle = None
+            module._decoder_input_hook_handle = None
             module.print = lambda *args, **kwargs: None
 
             config = types.SimpleNamespace(text_config=types.SimpleNamespace(hidden_size=8))
@@ -984,6 +999,259 @@ class LocationProjectionArtifactLoadTest(unittest.TestCase):
 
         with self.assertRaises(FileNotFoundError):
             module._load_non_rgb_projection_artifacts()
+
+
+class SceneLocationEncodingIntegrationTest(unittest.TestCase):
+    @staticmethod
+    def _build_module() -> Qwen3VLModule:
+        module = object.__new__(Qwen3VLModule)
+        module.device = torch.device("cpu")
+        module.location_encoding_scope = "all_visual"
+        module.location_encoding_scale_init = 0.1
+        module.location_encoding_learned_scale = True
+        module.num_non_rgb_tokens = 2
+        module.scene_location_encoding = SceneLocationEncoding(
+            hidden_size=4,
+            scale_init=0.1,
+            learned_scale=True,
+        )
+        module._print = lambda *args, **kwargs: None
+        module._location_encoding_norm_logged = False
+        return module
+
+    def test_all_visual_scope_changes_only_rgb_and_s1s2_content(self):
+        module = self._build_module()
+        inputs_embeds = torch.zeros(1, 7, 4)
+        kwargs = {
+            "inputs_embeds": inputs_embeds.clone(),
+            "visual_pos_masks": torch.tensor(
+                [[False, False, False, False, True, True, False]]
+            ),
+        }
+        encoding_state = {
+            "lat": torch.tensor([48.0], dtype=torch.float64),
+            "lon": torch.tensor([12.0], dtype=torch.float64),
+        }
+        non_rgb_state = {
+            "insert_positions": torch.tensor([1]),
+        }
+
+        module._apply_scene_location_encoding(
+            kwargs,
+            encoding_state=encoding_state,
+            non_rgb_state=non_rgb_state,
+        )
+
+        changed = kwargs["inputs_embeds"].ne(inputs_embeds).any(dim=-1)
+        expected = torch.tensor(
+            [[False, True, True, False, True, True, False]]
+        )
+        self.assertTrue(torch.equal(changed, expected))
+        self.assertTrue(
+            torch.equal(
+                kwargs["inputs_embeds"][0, 1],
+                kwargs["inputs_embeds"][0, 4],
+            )
+        )
+
+    def test_s1s2_scope_changes_only_s1s2_content(self):
+        module = self._build_module()
+        module.location_encoding_scope = "s1s2"
+        inputs_embeds = torch.zeros(1, 7, 4)
+        kwargs = {
+            "inputs_embeds": inputs_embeds.clone(),
+            "visual_pos_masks": torch.tensor(
+                [[False, False, False, False, True, True, False]]
+            ),
+        }
+
+        module._apply_scene_location_encoding(
+            kwargs,
+            encoding_state={
+                "lat": torch.tensor([48.0], dtype=torch.float64),
+                "lon": torch.tensor([12.0], dtype=torch.float64),
+            },
+            non_rgb_state={"insert_positions": torch.tensor([1])},
+        )
+
+        changed = kwargs["inputs_embeds"].ne(inputs_embeds).any(dim=-1)
+        expected = torch.tensor(
+            [[False, True, True, False, False, False, False]]
+        )
+        self.assertTrue(torch.equal(changed, expected))
+
+    def test_s1s2_scope_requires_s1s2_conditioning(self):
+        module = self._build_module()
+        module.location_encoding_scope = "s1s2"
+
+        with self.assertRaisesRegex(ValueError, "requires enabled S1/S2"):
+            module._apply_scene_location_encoding(
+                {
+                    "inputs_embeds": torch.zeros(1, 3, 4),
+                    "visual_pos_masks": torch.tensor([[False, True, False]]),
+                },
+                encoding_state={
+                    "lat": torch.tensor([48.0]),
+                    "lon": torch.tensor([12.0]),
+                },
+                non_rgb_state=None,
+            )
+
+    def test_loc_encoding_itself_does_not_insert_tokens(self):
+        module = _build_encoder_test_module()
+        module.loc_mode = "loc_encoding"
+        module.non_rgb_conditioning = "disabled"
+        original_ids = torch.tensor([[1, 2, 3]])
+        original_labels = torch.tensor([[11, 12, 13]])
+        batch = {
+            "input_ids": original_ids.clone(),
+            "labels": original_labels.clone(),
+            "lat": torch.tensor([48.0], dtype=torch.float64),
+            "lon": torch.tensor([12.0], dtype=torch.float64),
+        }
+
+        model_batch, _, _, _, _, _ = module._prepare_model_inputs(batch)
+
+        self.assertTrue(torch.equal(model_batch["input_ids"], original_ids))
+        self.assertTrue(torch.equal(model_batch["labels"], original_labels))
+        self.assertIsNotNone(module._location_encoding_state)
+        self.assertIsNone(module._location_insertion_state)
+
+    def test_projected_s1s2_tokens_are_replaced_before_encoding_is_added(self):
+        module = self._build_module()
+        module._location_insertion_state = None
+        module._location_encoding_state = {
+            "lat": torch.tensor([48.0], dtype=torch.float64),
+            "lon": torch.tensor([12.0], dtype=torch.float64),
+        }
+        module._non_rgb_insertion_state = {
+            "tensor": torch.ones(1, 12, 2, 2),
+            "bands": None,
+            "insert_positions": torch.tensor([1]),
+        }
+        module.non_rgb_encoder = lambda imagery, bands: torch.zeros(1, 2, 5)
+        module.non_rgb_modality_projection = lambda features: torch.full(
+            (1, 2, 4), 10.0
+        )
+        kwargs = {
+            "inputs_embeds": torch.zeros(1, 6, 4),
+            "visual_pos_masks": torch.tensor(
+                [[False, False, False, False, True, False]]
+            ),
+        }
+        expected_geo = module.scene_location_encoding(
+            module._location_encoding_state["lat"],
+            module._location_encoding_state["lon"],
+        )[0]
+
+        module._decoder_input_conditioning_hook(None, (), kwargs)
+
+        self.assertTrue(
+            torch.allclose(kwargs["inputs_embeds"][0, 1], 10.0 + expected_geo)
+        )
+        self.assertTrue(
+            torch.allclose(kwargs["inputs_embeds"][0, 2], 10.0 + expected_geo)
+        )
+        self.assertTrue(
+            torch.allclose(kwargs["inputs_embeds"][0, 4], expected_geo)
+        )
+
+    def test_filled_generation_cache_skips_location_addition(self):
+        module = self._build_module()
+        module._location_insertion_state = None
+        module._non_rgb_insertion_state = None
+        module._location_encoding_state = {
+            "lat": torch.tensor([48.0], dtype=torch.float64),
+            "lon": torch.tensor([12.0], dtype=torch.float64),
+        }
+
+        class FakeCache:
+            def get_seq_length(self):
+                return 3
+
+        kwargs = {
+            "inputs_embeds": torch.zeros(1, 1, 4),
+            "visual_pos_masks": torch.zeros(1, 1, dtype=torch.bool),
+            "past_key_values": FakeCache(),
+        }
+
+        module._decoder_input_conditioning_hook(None, (), kwargs)
+
+        self.assertTrue(torch.equal(kwargs["inputs_embeds"], torch.zeros(1, 1, 4)))
+
+    def test_visual_scope_requires_exact_native_visual_mask(self):
+        module = self._build_module()
+
+        with self.assertRaisesRegex(ValueError, "visual_pos_masks"):
+            module._apply_scene_location_encoding(
+                {"inputs_embeds": torch.zeros(1, 3, 4)},
+                encoding_state={
+                    "lat": torch.tensor([48.0]),
+                    "lon": torch.tensor([12.0]),
+                },
+                non_rgb_state=None,
+            )
+
+    def test_artifact_load_validates_manifest_and_restores_scale(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            saved = self._build_module()
+            saved.scene_location_encoding.scale.data.fill_(0.35)
+            save_file(
+                saved.scene_location_encoding.state_dict(),
+                Path(tmpdir) / "location_encoding.safetensors",
+            )
+            manifest = saved.get_scene_location_encoding_manifest()
+            (Path(tmpdir) / "location_encoding_config.json").write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+
+            loaded = self._build_module()
+            loaded.adapter_dir = tmpdir
+            loaded.scene_location_encoding.scale.data.zero_()
+            loaded._load_scene_location_encoding_artifacts()
+
+            self.assertAlmostEqual(
+                float(loaded.scene_location_encoding.scale.detach()),
+                0.35,
+            )
+
+            loaded.location_encoding_scope = "s1s2"
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                loaded._load_scene_location_encoding_artifacts()
+
+    def test_scale_uses_base_learning_rate_without_weight_decay(self):
+        module = self._build_module()
+        module.model = torch.nn.Linear(4, 4)
+        module.location_modality_projection = None
+        module.non_rgb_modality_projection = None
+        module.learning_rate = 2e-4
+        module.location_projection_lr_multiplier = 5.0
+        module.non_rgb_projection_lr_multiplier = 5.0
+        module.weight_decay = 0.01
+        module.max_steps = 10
+        module.warmup_ratio = 0.1
+        module._trainer_or_none = lambda: None
+
+        original_optimizer = qwen3_module.bnb.optim.AdamW8bit
+        try:
+            qwen3_module.bnb.optim.AdamW8bit = torch.optim.AdamW
+            optimizer_config = module.configure_optimizers()
+        finally:
+            qwen3_module.bnb.optim.AdamW8bit = original_optimizer
+
+        optimizer = optimizer_config["optimizer"]
+        location_group = next(
+            group
+            for group in optimizer.param_groups
+            if group["name"] == "location_encoding_no_decay"
+        )
+        self.assertIs(
+            location_group["params"][0],
+            module.scene_location_encoding.scale,
+        )
+        self.assertEqual(location_group["initial_lr"], module.learning_rate)
+        self.assertEqual(location_group["weight_decay"], 0.0)
 
 
 if __name__ == "__main__":

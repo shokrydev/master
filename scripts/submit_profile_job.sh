@@ -96,10 +96,10 @@ case "$SIZE" in
 esac
 
 case "$CONDITION" in
-    no_loc|loc_text|loc_embed)
+    no_loc|loc_text|loc_embed|loc_encoding)
         ;;
     *)
-        echo "Invalid --condition '$CONDITION'. Use no_loc, loc_text or loc_embed."
+        echo "Invalid --condition '$CONDITION'. Use no_loc, loc_text, loc_embed or loc_encoding."
         exit 1
         ;;
 esac

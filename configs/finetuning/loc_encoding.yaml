@@ -1,0 +1,12 @@
+# Override for direct additive scene-geolocation encoding.
+#
+# This condition adds a deterministic latitude/longitude sine-cosine encoding
+# to existing LLM-facing RGB and S1/S2 content embeddings. It does not use
+# SatCLIP, coordinate text, extra tokens or modified Qwen position IDs.
+
+model:
+  init_args:
+    loc_mode: loc_encoding
+    location_encoding_scope: all_visual
+    location_encoding_scale_init: 0.1
+    location_encoding_learned_scale: true

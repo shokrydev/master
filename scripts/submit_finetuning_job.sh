@@ -106,6 +106,12 @@ for EXTRA_ARG in "${EXTRA_ARGS[@]}"; do
                 exit 1
             fi
             ;;
+        configs/finetuning/ablations/loc_encoding_*.yaml)
+            if [ "$CONDITION" != "loc_encoding" ]; then
+                echo "$EXTRA_ARG requires --condition loc_encoding."
+                exit 1
+            fi
+            ;;
     esac
 done
 
@@ -148,8 +154,11 @@ case "$CONDITION" in
     loc_embed)
         CONDITION_CONFIG="configs/finetuning/loc_embed.yaml"
         ;;
+    loc_encoding)
+        CONDITION_CONFIG="configs/finetuning/loc_encoding.yaml"
+        ;;
     *)
-        echo "Invalid --condition '$CONDITION'. Use no_loc, loc_text or loc_embed."
+        echo "Invalid --condition '$CONDITION'. Use no_loc, loc_text, loc_embed or loc_encoding."
         exit 1
         ;;
 esac

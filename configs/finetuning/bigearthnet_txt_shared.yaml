@@ -2,8 +2,9 @@
 #
 # BigEarthNet.txt is the core dataset for the geolocation experiments with
 # multispectral/SAR imagery. The default condition is no explicit location with
-# enabled non-RGB conditioning; compose loc_text.yaml or loc_embed.yaml for
-# location-conditioned runs.
+# enabled non-RGB conditioning; compose loc_text.yaml, loc_embed.yaml or the
+# post-core loc_encoding.yaml development override for location-conditioned
+# runs.
 
 seed_everything: 42
 

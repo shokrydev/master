@@ -7,6 +7,8 @@ from pathlib import Path
 
 import torch
 
+from src.models.scene_location_encoding import SceneLocationEncoding
+
 
 def _install_callback_test_stubs():
     lightning = types.ModuleType("lightning")
@@ -61,6 +63,11 @@ class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
                 tokenizer=_FakeTokenizer(),
                 location_modality_projection=torch.nn.Linear(2, 3),
                 non_rgb_modality_projection=torch.nn.Linear(4, 5),
+                scene_location_encoding=SceneLocationEncoding(8),
+                get_scene_location_encoding_manifest=lambda: {
+                    "version": 1,
+                    "scope": "all_visual",
+                },
                 print=lambda *args, **kwargs: None,
             )
 
@@ -70,6 +77,8 @@ class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
             self.assertTrue((Path(tmpdir) / "tokenizer.json").exists())
             self.assertTrue((Path(tmpdir) / "location_modality_projection.safetensors").exists())
             self.assertTrue((Path(tmpdir) / "non_rgb_modality_projection.safetensors").exists())
+            self.assertTrue((Path(tmpdir) / "location_encoding.safetensors").exists())
+            self.assertTrue((Path(tmpdir) / "location_encoding_config.json").exists())
             self.assertEqual(callback.best_score, 0.5)
 
     def test_train_end_saves_when_no_validation_metric_was_seen(self):
@@ -81,6 +90,7 @@ class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
                 tokenizer=_FakeTokenizer(),
                 location_modality_projection=None,
                 non_rgb_modality_projection=None,
+                scene_location_encoding=None,
                 print=lambda *args, **kwargs: None,
             )
 
@@ -90,6 +100,8 @@ class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
             self.assertTrue((Path(tmpdir) / "tokenizer.json").exists())
             self.assertFalse((Path(tmpdir) / "location_modality_projection.safetensors").exists())
             self.assertFalse((Path(tmpdir) / "non_rgb_modality_projection.safetensors").exists())
+            self.assertFalse((Path(tmpdir) / "location_encoding.safetensors").exists())
+            self.assertFalse((Path(tmpdir) / "location_encoding_config.json").exists())
 
 
 if __name__ == "__main__":

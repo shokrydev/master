@@ -123,7 +123,7 @@ case "$SIZE" in
 esac
 
 if [ -z "$CONDITION" ]; then
-    echo "Missing --condition. Use no_loc, loc_text or loc_embed."
+    echo "Missing --condition. Use no_loc, loc_text, loc_embed or loc_encoding."
     exit 1
 fi
 case "$CONDITION" in
@@ -136,8 +136,11 @@ case "$CONDITION" in
     loc_embed)
         CONDITION_CONFIG="configs/finetuning/loc_embed.yaml"
         ;;
+    loc_encoding)
+        CONDITION_CONFIG="configs/finetuning/loc_encoding.yaml"
+        ;;
     *)
-        echo "Invalid --condition '$CONDITION'. Use no_loc, loc_text or loc_embed."
+        echo "Invalid --condition '$CONDITION'. Use no_loc, loc_text, loc_embed or loc_encoding."
         exit 1
         ;;
 esac
@@ -151,7 +154,7 @@ case "$COORDINATE_PERTURBATION" in
         ;;
 esac
 if [ "$CONDITION" = "no_loc" ] && [ -n "$COORDINATE_PERTURBATION" ]; then
-    echo "--coordinate-perturbation is only meaningful for loc_text and loc_embed."
+    echo "--coordinate-perturbation is only meaningful for location-conditioned runs."
     exit 1
 fi
 

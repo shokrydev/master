@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import lightning as L
@@ -49,6 +50,28 @@ class SaveQLoRAAdaptersCallback(Callback):
             save_file(non_rgb_projection.state_dict(), non_rgb_projection_path)
         elif non_rgb_projection_path.exists():
             non_rgb_projection_path.unlink()
+
+        location_encoding_path = dirpath / "location_encoding.safetensors"
+        location_encoding_manifest_path = (
+            dirpath / "location_encoding_config.json"
+        )
+        location_encoding = getattr(pl_module, "scene_location_encoding", None)
+        if location_encoding is not None:
+            manifest = pl_module.get_scene_location_encoding_manifest()
+            if manifest is None:
+                raise RuntimeError(
+                    "Scene-location encoding is active but its manifest is missing"
+                )
+            save_file(location_encoding.state_dict(), location_encoding_path)
+            location_encoding_manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        else:
+            if location_encoding_path.exists():
+                location_encoding_path.unlink()
+            if location_encoding_manifest_path.exists():
+                location_encoding_manifest_path.unlink()
 
         pl_module.print(f"Saved QLoRA adapter bundle to {dirpath}")
 
