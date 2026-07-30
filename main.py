@@ -10,7 +10,7 @@ import torch
 from lightning.pytorch.cli import LightningArgumentParser, LightningCLI
 
 # Import concrete classes so Lightning CLI can discover them via class_path.
-from src.data_modules import BENTxTDataModule, GAIADataModule  # noqa: F401
+from src.data_modules import BENTxTDataModule  # noqa: F401
 from src.lightning_modules import Qwen3VLModule  # noqa: F401
 
 
@@ -25,7 +25,6 @@ class FinetuningCLI(LightningCLI):
         "bigearthnet_encoder_dir",
         "location_redacted_caption_file",
         "satclip_checkpoint_path",
-        "gaia_root",
     )
 
     def add_arguments_to_parser(self, parser: LightningArgumentParser) -> None:
