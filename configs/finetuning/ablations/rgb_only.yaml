@@ -1,0 +1,14 @@
+# Qwen3-VL RGB-only modality ablation.
+#
+# Keep the native rendered RGB path and remove the auxiliary S1/S2 encoder,
+# projection and inserted tokens. The same override is used for training and
+# evaluation so an RGB-only adapter is never loaded with the S1/S2 path enabled.
+
+model:
+  init_args:
+    non_rgb_conditioning: disabled
+    non_rgb_encoder_dir: null
+
+data:
+  init_args:
+    bands: RGB
