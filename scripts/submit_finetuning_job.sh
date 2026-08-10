@@ -262,6 +262,7 @@ echo "=============================================="
 SCRIPT="scripts/finetune_job.sbatch"
 FULL_CMD=(
     sbatch
+    --parsable
     "--job-name=$JOB_NAME"
     "--partition=$PARTITION"
 )
@@ -296,5 +297,11 @@ else
         exit 1
     fi
     echo "Submitting job..."
-    "${FULL_CMD[@]}"
+    SUBMISSION_OUTPUT="$("${FULL_CMD[@]}")"
+    JOB_ID="${SUBMISSION_OUTPUT%%;*}"
+    if ! [[ "$JOB_ID" =~ ^[0-9]+$ ]]; then
+        echo "Unexpected sbatch --parsable output: $SUBMISSION_OUTPUT"
+        exit 1
+    fi
+    echo "Submitted batch job $JOB_ID"
 fi

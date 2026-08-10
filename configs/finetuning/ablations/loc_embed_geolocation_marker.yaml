@@ -1,0 +1,5 @@
+# Marker-only loc_embed ablation composed after loc_embed.yaml.
+
+model:
+  init_args:
+    location_embed_marker: "Scene geolocation:"

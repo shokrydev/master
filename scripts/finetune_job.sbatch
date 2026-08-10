@@ -65,6 +65,9 @@ if [ "$CONDITION_CONFIG" = "configs/finetuning/loc_embed.yaml" ]; then
         REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
     fi
 fi
+if [ "$CONDITION_CONFIG" = "configs/finetuning/loc_additive_satclip.yaml" ]; then
+    REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
+fi
 if [ "$CAPTION_TARGET_CONFIG" = "configs/finetuning/location_redacted_captions.yaml" ]; then
     REQUIRED_ENV_VARS+=(BENTXT_LOCATION_REDACTED_CAPTION_FILE)
 elif [ -n "$CAPTION_TARGET_CONFIG" ]; then

@@ -6,6 +6,7 @@
 #   ./scripts/submit_evaluation_job.sh --condition loc_text --size 2B --adapter-dir /path/to/adapter
 #   ./scripts/submit_evaluation_job.sh --condition loc_embed --size 8B --adapter-dir /path/to/adapter --dry-run
 #   ./scripts/submit_evaluation_job.sh --condition loc_embed --size 2B --adapter-dir /path/to/adapter --coordinate-perturbation shuffled
+#   ./scripts/submit_evaluation_job.sh --condition loc_embed --size 2B --adapter-dir /future/adapter --dependency afterok:12345
 # ============================================================================
 
 set -e
@@ -29,6 +30,7 @@ PARTITION="${SLURM_DEFAULT_PARTITION:-}"
 TIME_LIMIT=""
 MEMORY=""
 CPUS=""
+DEPENDENCY=""
 DRY_RUN=false
 EXTRA_ARGS=()
 
@@ -89,6 +91,11 @@ while [[ $# -gt 0 ]]; do
         --cpus)
             require_arg "$1" "${2:-}"
             CPUS="$2"
+            shift 2
+            ;;
+        --dependency)
+            require_arg "$1" "${2:-}"
+            DEPENDENCY="$2"
             shift 2
             ;;
         --dry-run)
@@ -187,8 +194,19 @@ REQUIRED_ENV_VARS=(
     EVALUATION_OUTPUT_ROOT
     HF_HOME
 )
+USES_SATCLIP_L40=false
+for EXTRA_ARG in "${EXTRA_ARGS[@]}"; do
+    if [ "$EXTRA_ARG" = "configs/finetuning/ablations/loc_embed_satclip_l40.yaml" ]; then
+        USES_SATCLIP_L40=true
+        break
+    fi
+done
 if [ "$CONDITION" = "loc_embed" ]; then
-    REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
+    if [ "$USES_SATCLIP_L40" = true ]; then
+        REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
+    else
+        REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
+    fi
 fi
 if [ "$CONDITION" = "loc_additive_satclip" ]; then
     REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
@@ -218,6 +236,7 @@ echo "Slurm partition: $PARTITION"
 echo "Slurm time limit: ${TIME_LIMIT:-<partition default>}"
 echo "Slurm memory: ${MEMORY:-<sbatch default>}"
 echo "Slurm CPUs per task: ${CPUS:-<sbatch default>}"
+echo "Slurm dependency: ${DEPENDENCY:-<none>}"
 echo "Evaluation output root: $EVALUATION_OUTPUT_ROOT"
 echo "Required paths:"
 for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do
@@ -242,6 +261,9 @@ fi
 if [ -n "$CPUS" ]; then
     FULL_CMD+=("--cpus-per-task=$CPUS")
 fi
+if [ -n "$DEPENDENCY" ]; then
+    FULL_CMD+=("--dependency=$DEPENDENCY")
+fi
 FULL_CMD+=("--export=ALL,CONDITION_CONFIG=$CONDITION_CONFIG,EVAL_ADAPTER_DIR=$ADAPTER_DIR,RUN_LABEL=$RUN_LABEL,MODEL_SIZE=$SIZE" "$SCRIPT")
 FULL_CMD+=("--model.init_args.model_name_or_path" "$MODEL_NAME")
 if [ -n "$COORDINATE_PERTURBATION" ]; then
@@ -264,7 +286,7 @@ else
         echo "Set them before submitting so Slurm can inherit them via --export=ALL."
         exit 1
     fi
-    if [ ! -d "$ADAPTER_DIR" ]; then
+    if [ -z "$DEPENDENCY" ] && [ ! -d "$ADAPTER_DIR" ]; then
         echo "Adapter directory is not a directory: $ADAPTER_DIR"
         exit 1
     fi
