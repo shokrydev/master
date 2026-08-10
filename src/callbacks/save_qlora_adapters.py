@@ -73,6 +73,35 @@ class SaveQLoRAAdaptersCallback(Callback):
             if location_encoding_manifest_path.exists():
                 location_encoding_manifest_path.unlink()
 
+        additive_projection_path = (
+            dirpath / "additive_location_projection.safetensors"
+        )
+        additive_manifest_path = (
+            dirpath / "additive_location_projection_config.json"
+        )
+        additive_projection = getattr(
+            pl_module,
+            "additive_location_projection",
+            None,
+        )
+        if additive_projection is not None:
+            manifest = pl_module.get_additive_location_projection_manifest()
+            if manifest is None:
+                raise RuntimeError(
+                    "Additive location projection is active but its manifest "
+                    "is missing"
+                )
+            save_file(additive_projection.state_dict(), additive_projection_path)
+            additive_manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        else:
+            if additive_projection_path.exists():
+                additive_projection_path.unlink()
+            if additive_manifest_path.exists():
+                additive_manifest_path.unlink()
+
         pl_module.print(f"Saved QLoRA adapter bundle to {dirpath}")
 
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:

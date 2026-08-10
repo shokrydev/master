@@ -123,7 +123,7 @@ case "$SIZE" in
 esac
 
 if [ -z "$CONDITION" ]; then
-    echo "Missing --condition. Use no_loc, loc_text, loc_embed or loc_encoding."
+    echo "Missing --condition. Use no_loc, loc_text, loc_embed, loc_encoding or loc_additive_satclip."
     exit 1
 fi
 case "$CONDITION" in
@@ -139,8 +139,11 @@ case "$CONDITION" in
     loc_encoding)
         CONDITION_CONFIG="configs/finetuning/loc_encoding.yaml"
         ;;
+    loc_additive_satclip)
+        CONDITION_CONFIG="configs/finetuning/loc_additive_satclip.yaml"
+        ;;
     *)
-        echo "Invalid --condition '$CONDITION'. Use no_loc, loc_text, loc_embed or loc_encoding."
+        echo "Invalid --condition '$CONDITION'. Use no_loc, loc_text, loc_embed, loc_encoding or loc_additive_satclip."
         exit 1
         ;;
 esac
@@ -186,6 +189,9 @@ REQUIRED_ENV_VARS=(
 )
 if [ "$CONDITION" = "loc_embed" ]; then
     REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
+fi
+if [ "$CONDITION" = "loc_additive_satclip" ]; then
+    REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
 fi
 MISSING_ENV_VARS=()
 for VAR_NAME in "${REQUIRED_ENV_VARS[@]}"; do

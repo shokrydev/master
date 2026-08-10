@@ -90,7 +90,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--condition",
-        choices=("no_loc", "loc_text", "loc_embed", "loc_encoding"),
+        choices=(
+            "no_loc",
+            "loc_text",
+            "loc_embed",
+            "loc_encoding",
+            "loc_additive_satclip",
+        ),
         default="loc_embed",
         help="Location condition to profile. loc_embed is the heaviest core condition.",
     )
@@ -357,8 +363,12 @@ def main_single(args: argparse.Namespace) -> dict[str, Any]:
     lmdb_file = require_env("BIGEARTHNET_V2_LMDB_ROOT")
     encoder_dir = require_env("BIGEARTHNET_ENCODER_DIR")
     satclip_checkpoint = (
-        require_env("SATCLIP_CHECKPOINT_PATH")
-        if args.condition == "loc_embed"
+        require_env(
+            "SATCLIP_L40_CHECKPOINT_PATH"
+            if args.condition == "loc_additive_satclip"
+            else "SATCLIP_CHECKPOINT_PATH"
+        )
+        if args.condition in {"loc_embed", "loc_additive_satclip"}
         else None
     )
 
@@ -393,7 +403,18 @@ def main_single(args: argparse.Namespace) -> dict[str, Any]:
             DEFAULT_LOCATION_EMBED_MARKER if args.condition == "loc_embed" else None
         ),
         location_encoding_scope=(
-            "all_visual" if args.condition == "loc_encoding" else None
+            "s1s2"
+            if args.condition == "loc_additive_satclip"
+            else "all_visual"
+            if args.condition == "loc_encoding"
+            else None
+        ),
+        location_encoding_projection=(
+            "linear" if args.condition == "loc_additive_satclip" else "none"
+        ),
+        location_encoding_feature_dim=256,
+        location_encoding_learned_scale=(
+            False if args.condition == "loc_additive_satclip" else True
         ),
         non_rgb_conditioning="enabled",
         non_rgb_encoder_dir=encoder_dir,
@@ -404,7 +425,11 @@ def main_single(args: argparse.Namespace) -> dict[str, Any]:
         satclip_checkpoint=satclip_checkpoint,
         satclip_dim=256,
         num_location_tokens=8 if args.condition == "loc_embed" else 1,
-        location_projection_lr_multiplier=5.0 if args.condition == "loc_embed" else 1.0,
+        location_projection_lr_multiplier=(
+            5.0
+            if args.condition in {"loc_embed", "loc_additive_satclip"}
+            else 1.0
+        ),
     )
 
     module.setup("fit")

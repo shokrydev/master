@@ -26,6 +26,8 @@ QWEN_MODALITY_PROJECTION_MODULES = [
     "deepstack_merger_list.2",
 ]
 
+ADDITIVE_LOCATION_MODES = {"loc_encoding", "loc_additive_satclip"}
+
 
 class Qwen3VLModule(L.LightningModule):
     """
@@ -61,11 +63,19 @@ class Qwen3VLModule(L.LightningModule):
         validation_generation_sample_ids: list[str] | None = None,
         validation_generation_path: str | None = None,
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
-        loc_mode: Literal["no_loc", "loc_text", "loc_embed", "loc_encoding"] = "no_loc",
+        loc_mode: Literal[
+            "no_loc",
+            "loc_text",
+            "loc_embed",
+            "loc_encoding",
+            "loc_additive_satclip",
+        ] = "no_loc",
         location_text_template: str | None = None,
         coordinates_decimal_places: int = 0,
         location_embed_marker: str | None = None,
         location_encoding_scope: Literal["all_visual", "s1s2"] | None = None,
+        location_encoding_projection: Literal["none", "linear"] = "none",
+        location_encoding_feature_dim: int = 256,
         location_encoding_scale_init: float = 0.1,
         location_encoding_learned_scale: bool = True,
         non_rgb_conditioning: Literal["disabled", "enabled"] = "disabled",
@@ -113,7 +123,7 @@ class Qwen3VLModule(L.LightningModule):
                 generations.
             system_prompt: Optional system message injected during chat formatting.
             loc_mode: Location conditioning mode ("no_loc", "loc_text",
-                "loc_embed", "loc_encoding").
+                "loc_embed", "loc_encoding", "loc_additive_satclip").
             location_text_template: Format string appended to the user prompt when
                 `loc_mode="loc_text"`. Coordinate formatting is handled by the
                 shared collator.
@@ -122,9 +132,15 @@ class Qwen3VLModule(L.LightningModule):
             location_embed_marker: Text marker appended to the prompt before
                 projected SatCLIP tokens when `loc_mode="loc_embed"`.
             location_encoding_scope: Existing embeddings that receive direct
-                scene-coordinate encoding when `loc_mode="loc_encoding"`.
-            location_encoding_scale_init: Initial amplitude of the deterministic
-                scene-coordinate encoding.
+                scene-coordinate encoding for additive location modes.
+            location_encoding_projection: Whether direct `loc_encoding` uses
+                its original fixed hidden-size basis or the shared linear
+                alignment bridge.
+            location_encoding_feature_dim: Input width of the shared additive
+                location bridge.
+            location_encoding_scale_init: Additive residual scale; it is the
+                initialization when the legacy direct scale is learned and a
+                fixed scale when a linear alignment bridge is used.
             location_encoding_learned_scale: Whether the encoding amplitude is
                 trainable.
             non_rgb_conditioning: Whether non-RGB imagery conditions Qwen.
@@ -141,7 +157,8 @@ class Qwen3VLModule(L.LightningModule):
             num_non_rgb_tokens: Number of projected non-RGB imagery tokens to insert.
             non_rgb_projection_lr_multiplier: Learning-rate multiplier for
                 the randomly initialized S1/S2-to-Qwen projection.
-            satclip_checkpoint: Path to SatCLIP checkpoint (required for encoder mode)
+            satclip_checkpoint: Path to the SatCLIP checkpoint required by
+                SatCLIP-based location modes.
             satclip_dim: SatCLIP embedding dimension
             num_location_tokens: Number of location tokens to insert before the visual block (encoder mode)
             location_projection_lr_multiplier: Learning-rate multiplier for
@@ -152,7 +169,13 @@ class Qwen3VLModule(L.LightningModule):
         """
         super().__init__()
 
-        if loc_mode not in {"no_loc", "loc_text", "loc_embed", "loc_encoding"}:
+        if loc_mode not in {
+            "no_loc",
+            "loc_text",
+            "loc_embed",
+            "loc_encoding",
+            "loc_additive_satclip",
+        }:
             raise ValueError(f"Unsupported loc_mode: {loc_mode}")
         if non_rgb_conditioning not in {"disabled", "enabled"}:
             raise ValueError(f"Unsupported non_rgb_conditioning: {non_rgb_conditioning}")
@@ -168,17 +191,69 @@ class Qwen3VLModule(L.LightningModule):
             raise ValueError("loc_mode='loc_embed' requires location_embed_marker")
         if loc_mode != "loc_embed" and location_embed_marker is not None:
             raise ValueError("location_embed_marker is only used when loc_mode='loc_embed'")
-        if loc_mode == "loc_encoding" and location_encoding_scope not in {
-            "all_visual",
-            "s1s2",
-        }:
+        if (
+            loc_mode in ADDITIVE_LOCATION_MODES
+            and location_encoding_scope not in {"all_visual", "s1s2"}
+        ):
             raise ValueError(
-                "loc_mode='loc_encoding' requires location_encoding_scope to "
+                "Additive location modes require location_encoding_scope to "
                 "be 'all_visual' or 's1s2'"
             )
-        if loc_mode != "loc_encoding" and location_encoding_scope is not None:
+        if (
+            loc_mode not in ADDITIVE_LOCATION_MODES
+            and location_encoding_scope is not None
+        ):
             raise ValueError(
-                "location_encoding_scope is only used when loc_mode='loc_encoding'"
+                "location_encoding_scope is only used when "
+                "loc_mode='loc_encoding' or 'loc_additive_satclip'"
+            )
+        if location_encoding_projection not in {"none", "linear"}:
+            raise ValueError(
+                "location_encoding_projection must be 'none' or 'linear'"
+            )
+        if (
+            loc_mode == "loc_additive_satclip"
+            and location_encoding_projection != "linear"
+        ):
+            raise ValueError(
+                "loc_mode='loc_additive_satclip' requires "
+                "location_encoding_projection='linear'"
+            )
+        if (
+            loc_mode not in ADDITIVE_LOCATION_MODES
+            and location_encoding_projection != "none"
+        ):
+            raise ValueError(
+                "location_encoding_projection is only used by additive "
+                "location modes"
+            )
+        if location_encoding_feature_dim <= 0:
+            raise ValueError("location_encoding_feature_dim must be positive")
+        if (
+            loc_mode == "loc_encoding"
+            and location_encoding_projection == "linear"
+            and location_encoding_feature_dim % 4 != 0
+        ):
+            raise ValueError(
+                "Projected direct location encoding requires "
+                "location_encoding_feature_dim to be divisible by four"
+            )
+        if (
+            location_encoding_projection == "linear"
+            and location_encoding_learned_scale
+        ):
+            raise ValueError(
+                "Projected additive location conditioning requires "
+                "location_encoding_learned_scale=false because the trainable "
+                "projection already controls amplitude"
+            )
+        if (
+            loc_mode == "loc_additive_satclip"
+            and satclip_dim != location_encoding_feature_dim
+        ):
+            raise ValueError(
+                "loc_additive_satclip requires satclip_dim to equal "
+                "location_encoding_feature_dim"
             )
         if (
             not math.isfinite(location_encoding_scale_init)
@@ -253,6 +328,8 @@ class Qwen3VLModule(L.LightningModule):
         self.coordinates_decimal_places = coordinates_decimal_places
         self.location_embed_marker = location_embed_marker
         self.location_encoding_scope = location_encoding_scope
+        self.location_encoding_projection = location_encoding_projection
+        self.location_encoding_feature_dim = location_encoding_feature_dim
         self.location_encoding_scale_init = float(location_encoding_scale_init)
         self.location_encoding_learned_scale = location_encoding_learned_scale
         self.non_rgb_conditioning = non_rgb_conditioning
@@ -280,6 +357,8 @@ class Qwen3VLModule(L.LightningModule):
         self.satclip = None
         self.location_modality_projection = None
         self.scene_location_encoding = None
+        self.scene_location_features = None
+        self.additive_location_projection = None
         self.non_rgb_encoder = None
         self.non_rgb_modality_projection = None
         self._decoder_input_hook_handle = None
@@ -399,16 +478,38 @@ class Qwen3VLModule(L.LightningModule):
             )
         self._set_datamodule_collator()
 
-        # Set up loc_embed components
+        projected_additive_location = (
+            self.loc_mode in ADDITIVE_LOCATION_MODES
+            and self.location_encoding_projection == "linear"
+        )
+        if (
+            projected_additive_location
+            and self.non_rgb_conditioning == "enabled"
+        ):
+            # Keep the paired direct/SatCLIP experiment's randomly initialized
+            # S1/S2 projection identical. SatCLIP construction consumes random
+            # numbers before its checkpoint is loaded.
+            self._setup_non_rgb_conditioning()
+            if self.adapter_dir is not None:
+                self._load_non_rgb_projection_artifacts()
+
         if self.loc_mode == "loc_embed":
             self._setup_loc_embed()
             if self.adapter_dir is not None:
                 self._load_location_projection_artifacts()
-        elif self.loc_mode == "loc_encoding":
-            self._setup_scene_location_encoding()
-            if self.adapter_dir is not None:
-                self._load_scene_location_encoding_artifacts()
-        if self.non_rgb_conditioning == "enabled":
+        elif self.loc_mode in ADDITIVE_LOCATION_MODES:
+            if self.location_encoding_projection == "linear":
+                self._setup_projected_additive_location_conditioning()
+                if self.adapter_dir is not None:
+                    self._load_additive_location_projection_artifacts()
+            else:
+                self._setup_scene_location_encoding()
+                if self.adapter_dir is not None:
+                    self._load_scene_location_encoding_artifacts()
+        if (
+            self.non_rgb_conditioning == "enabled"
+            and not projected_additive_location
+        ):
             self._setup_non_rgb_conditioning()
             if self.adapter_dir is not None:
                 self._load_non_rgb_projection_artifacts()
@@ -417,6 +518,7 @@ class Qwen3VLModule(L.LightningModule):
         total_params = sum(p.numel() for p in self.model.parameters())
         location_proj_params = 0
         location_encoding_params = 0
+        additive_location_proj_params = 0
         non_rgb_proj_params = 0
         if self.location_modality_projection is not None:
             location_proj_params = sum(p.numel() for p in self.location_modality_projection.parameters())
@@ -428,6 +530,12 @@ class Qwen3VLModule(L.LightningModule):
             )
             trainable_params += location_encoding_params
             total_params += location_encoding_params
+        if getattr(self, "additive_location_projection", None) is not None:
+            additive_location_proj_params = sum(
+                p.numel() for p in self.additive_location_projection.parameters()
+            )
+            trainable_params += additive_location_proj_params
+            total_params += additive_location_proj_params
         if self.non_rgb_modality_projection is not None:
             non_rgb_proj_params = sum(p.numel() for p in self.non_rgb_modality_projection.parameters())
             trainable_params += non_rgb_proj_params
@@ -452,6 +560,21 @@ class Qwen3VLModule(L.LightningModule):
                 f"scale_init={self.location_encoding_scale_init:g}; "
                 f"learned_scale={self.location_encoding_learned_scale}"
             )
+        if getattr(self, "additive_location_projection", None) is not None:
+            self._print(
+                "AdditiveLocationProjection params: "
+                f"{additive_location_proj_params:,}; "
+                f"source={self._additive_location_feature_source()}; "
+                f"scope={self.location_encoding_scope}; "
+                f"scale={self.location_encoding_scale_init:g}"
+            )
+            if self.location_projection_lr_multiplier != 1.0:
+                location_lr = self.learning_rate * self.location_projection_lr_multiplier
+                self._print(
+                    "AdditiveLocationProjection LR: "
+                    f"{location_lr:g} "
+                    f"({self.location_projection_lr_multiplier:g}x)"
+                )
         if self.non_rgb_modality_projection is not None:
             self._print(f"NonRGBModalityProjection params: {non_rgb_proj_params:,}")
             if self.non_rgb_projection_lr_multiplier != 1.0:
@@ -541,6 +664,118 @@ class Qwen3VLModule(L.LightningModule):
         ).to(self.device)
         self._register_decoder_input_hook()
 
+    def _additive_location_feature_source(self) -> str:
+        if self.loc_mode == "loc_encoding":
+            return "direct"
+        if self.loc_mode == "loc_additive_satclip":
+            return "satclip"
+        raise ValueError(
+            f"Unsupported projected additive location mode: {self.loc_mode}"
+        )
+
+    def _additive_location_source_config(self) -> dict[str, object]:
+        source = self._additive_location_feature_source()
+        if source == "direct":
+            return {
+                "encoding_type": self.scene_location_features.encoding_type,
+                "coordinate_order": ["latitude", "longitude"],
+                "coordinate_units": "degrees",
+                "coordinate_ranges": {
+                    "latitude": [-90.0, 90.0],
+                    "longitude": [-180.0, 180.0],
+                },
+            }
+        metadata = getattr(self.satclip, "checkpoint_metadata", None)
+        if metadata is None:
+            raise RuntimeError("Loaded SatCLIP encoder has no checkpoint metadata")
+        return {
+            "coordinate_order": ["longitude", "latitude"],
+            "coordinate_units": "degrees",
+            "satclip": metadata,
+        }
+
+    def get_additive_location_projection_manifest(self) -> dict[str, object] | None:
+        if self.additive_location_projection is None:
+            return None
+        return self.additive_location_projection.manifest(
+            feature_source=self._additive_location_feature_source(),
+            scope=self.location_encoding_scope,
+            source_config=self._additive_location_source_config(),
+        )
+
+    def _setup_projected_additive_location_conditioning(self) -> None:
+        from src.models.additive_location_projection import (
+            AdditiveLocationProjection,
+        )
+
+        self.additive_location_projection = AdditiveLocationProjection(
+            feature_dim=self.location_encoding_feature_dim,
+            hidden_size=self._get_text_hidden_size(),
+            scale=self.location_encoding_scale_init,
+        ).to(self.device)
+
+        if self.loc_mode == "loc_encoding":
+            from src.models.scene_location_encoding import SceneLocationFeatures
+
+            self.scene_location_features = SceneLocationFeatures(
+                self.location_encoding_feature_dim
+            ).to(self.device)
+        elif self.loc_mode == "loc_additive_satclip":
+            from src.models.satclip import get_satclip
+
+            if not self.satclip_checkpoint:
+                raise ValueError(
+                    "satclip_checkpoint is required when "
+                    "loc_mode='loc_additive_satclip'"
+                )
+            self.satclip = get_satclip(
+                self.satclip_checkpoint,
+                device=self.device,
+            )
+            checkpoint_dim = int(self.satclip.checkpoint_metadata["embed_dim"])
+            if checkpoint_dim != self.location_encoding_feature_dim:
+                raise ValueError(
+                    "SatCLIP checkpoint output dimension does not match the "
+                    "additive bridge: "
+                    f"{checkpoint_dim} != {self.location_encoding_feature_dim}"
+                )
+            self.satclip.eval()
+            for parameter in self.satclip.parameters():
+                parameter.requires_grad = False
+        else:
+            raise ValueError(
+                f"Unsupported projected additive location mode: {self.loc_mode}"
+            )
+
+        self._register_decoder_input_hook()
+
+    def _load_additive_location_projection_artifacts(self) -> None:
+        projection_path = (
+            Path(self.adapter_dir) / "additive_location_projection.safetensors"
+        )
+        manifest_path = (
+            Path(self.adapter_dir) / "additive_location_projection_config.json"
+        )
+        if not projection_path.is_file():
+            raise FileNotFoundError(
+                f"Missing additive location projection artifact: {projection_path}"
+            )
+        if not manifest_path.is_file():
+            raise FileNotFoundError(
+                f"Missing additive location projection manifest: {manifest_path}"
+            )
+
+        actual_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected_manifest = self.get_additive_location_projection_manifest()
+        if actual_manifest != expected_manifest:
+            raise ValueError(
+                "Additive location projection config does not match the saved "
+                f"adapter: expected {expected_manifest}, found {actual_manifest}"
+            )
+
+        state_dict = load_file(projection_path, device=str(self.device))
+        self.additive_location_projection.load_state_dict(state_dict)
+
     def _setup_non_rgb_conditioning(self) -> None:
         """Initialize frozen BigEarthNet encoder and trainable non-RGB projection."""
         from src.models.bigearthnet_s1s2_encoder import BigEarthNetS1S2Encoder
@@ -610,6 +845,27 @@ class Qwen3VLModule(L.LightningModule):
             f"LocationModalityProjection: "
             f"{self.satclip_dim} -> {hidden_size} x {self.num_location_tokens}"
         )
+
+    def _encode_satclip_coordinates(
+        self,
+        lat: torch.Tensor,
+        lon: torch.Tensor,
+    ) -> torch.Tensor:
+        """Encode coordinates with frozen SatCLIP in deterministic eval mode."""
+        self.satclip.eval()
+        coords = torch.stack([lon, lat], dim=-1).double()
+        with torch.no_grad():
+            return self.satclip(coords).float()
+
+    def _encode_non_rgb_imagery(
+        self,
+        imagery: torch.Tensor,
+        bands: Any,
+    ) -> torch.Tensor:
+        """Encode S1/S2 imagery with the frozen encoder in eval mode."""
+        self.non_rgb_encoder.eval()
+        with torch.no_grad():
+            return self.non_rgb_encoder(imagery, bands).float()
 
     @staticmethod
     def _insert_tokens_2d(
@@ -683,10 +939,7 @@ class Qwen3VLModule(L.LightningModule):
             lat = location_state["lat"]
             lon = location_state["lon"]
 
-            # SatCLIP expects (B, 2) of (lon, lat) as float64
-            coords = torch.stack([lon, lat], dim=-1).double()
-            with torch.no_grad():
-                loc_embed = self.satclip(coords).float()  # (B, satclip_dim)
+            loc_embed = self._encode_satclip_coordinates(lat, lon)
 
             loc_tokens = self.location_modality_projection(loc_embed)
             projected_tokens.append(loc_tokens)
@@ -695,8 +948,7 @@ class Qwen3VLModule(L.LightningModule):
             insert_positions = non_rgb_state["insert_positions"]
             imagery = non_rgb_state["tensor"].to(self.device)
             bands = non_rgb_state["bands"]
-            with torch.no_grad():
-                non_rgb_features = self.non_rgb_encoder(imagery, bands).float()
+            non_rgb_features = self._encode_non_rgb_imagery(imagery, bands)
             non_rgb_tokens = self.non_rgb_modality_projection(non_rgb_features)
             projected_tokens.append(non_rgb_tokens)
 
@@ -727,7 +979,8 @@ class Qwen3VLModule(L.LightningModule):
         inputs_embeds = kwargs.get("inputs_embeds")
         if inputs_embeds is None:
             raise ValueError(
-                "loc_mode='loc_encoding' requires language-model inputs_embeds"
+                "Additive location conditioning requires language-model "
+                "inputs_embeds"
             )
         if self.location_encoding_scope not in {"all_visual", "s1s2"}:
             raise ValueError(
@@ -784,9 +1037,21 @@ class Qwen3VLModule(L.LightningModule):
 
         lat = encoding_state["lat"].to(inputs_embeds.device)
         lon = encoding_state["lon"].to(inputs_embeds.device)
-        geo_encoding = self.scene_location_encoding(lat, lon).to(
-            dtype=inputs_embeds.dtype
-        )
+        if getattr(self, "additive_location_projection", None) is not None:
+            if self.loc_mode == "loc_encoding":
+                location_features = self.scene_location_features(lat, lon)
+            elif self.loc_mode == "loc_additive_satclip":
+                location_features = self._encode_satclip_coordinates(lat, lon)
+            else:
+                raise ValueError(
+                    f"Unsupported projected additive location mode: {self.loc_mode}"
+                )
+            geo_encoding = self.additive_location_projection(location_features)
+            scale = self.additive_location_projection.scale.detach().float()
+        else:
+            geo_encoding = self.scene_location_encoding(lat, lon)
+            scale = self.scene_location_encoding.scale.detach().float()
+        geo_encoding = geo_encoding.to(dtype=inputs_embeds.dtype)
         if geo_encoding.shape != (
             inputs_embeds.shape[0],
             inputs_embeds.shape[2],
@@ -808,12 +1073,11 @@ class Qwen3VLModule(L.LightningModule):
                     else None
                 )
                 encoding_rms = geo_encoding.float().square().mean().sqrt()
-                scale = self.scene_location_encoding.scale.detach().float()
             non_rgb_rms_text = (
                 f"{float(non_rgb_rms):.6g}" if non_rgb_rms is not None else "n/a"
             )
             message = (
-                "SceneLocationEncoding first-batch RMS: "
+                "Additive location conditioning first-batch RMS: "
                 f"rgb={float(rgb_rms):.6g}, "
                 f"s1s2={non_rgb_rms_text}, "
                 f"scaled_encoding={float(encoding_rms):.6g}, "
@@ -902,10 +1166,10 @@ class Qwen3VLModule(L.LightningModule):
                 "insert_positions": insert_positions.to(self.device),
             }
             num_inserted_tokens += self.num_location_tokens
-        elif self.loc_mode == "loc_encoding":
+        elif self.loc_mode in ADDITIVE_LOCATION_MODES:
             if lat is None or lon is None:
                 raise ValueError(
-                    "loc_mode='loc_encoding' requires both lat and lon in the batch"
+                    "Additive location modes require both lat and lon in the batch"
                 )
             self._location_encoding_state = {
                 "lat": lat.to(self.device),
@@ -1267,6 +1531,13 @@ class Qwen3VLModule(L.LightningModule):
             for name, param in self.location_modality_projection.named_parameters():
                 add_param(
                     f"location_modality_projection.{name}",
+                    param,
+                    location_projection=True,
+                )
+        if getattr(self, "additive_location_projection", None) is not None:
+            for name, param in self.additive_location_projection.named_parameters():
+                add_param(
+                    f"additive_location_projection.{name}",
                     param,
                     location_projection=True,
                 )
