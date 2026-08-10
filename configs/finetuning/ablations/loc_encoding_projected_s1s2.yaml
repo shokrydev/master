@@ -1,0 +1,11 @@
+# Project the direct 256-dimensional coordinate basis into Qwen space and add
+# it only to the existing S1/S2 tokens.
+
+model:
+  init_args:
+    location_encoding_scope: s1s2
+    location_encoding_projection: linear
+    location_encoding_feature_dim: 256
+    location_encoding_scale_init: 0.1
+    location_encoding_learned_scale: false
+    location_projection_lr_multiplier: 5.0

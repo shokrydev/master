@@ -157,8 +157,11 @@ case "$CONDITION" in
     loc_encoding)
         CONDITION_CONFIG="configs/finetuning/loc_encoding.yaml"
         ;;
+    loc_additive_satclip)
+        CONDITION_CONFIG="configs/finetuning/loc_additive_satclip.yaml"
+        ;;
     *)
-        echo "Invalid --condition '$CONDITION'. Use no_loc, loc_text, loc_embed or loc_encoding."
+        echo "Invalid --condition '$CONDITION'. Use no_loc, loc_text, loc_embed, loc_encoding or loc_additive_satclip."
         exit 1
         ;;
 esac
@@ -201,6 +204,9 @@ if [ "$CONDITION" = "loc_embed" ]; then
     else
         REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
     fi
+fi
+if [ "$CONDITION" = "loc_additive_satclip" ]; then
+    REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
 fi
 if [ "$CAPTION_TARGET" = "location_redacted_caption" ]; then
     REQUIRED_ENV_VARS+=(BENTXT_LOCATION_REDACTED_CAPTION_FILE)

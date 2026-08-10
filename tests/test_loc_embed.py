@@ -10,7 +10,11 @@ from pathlib import Path
 import torch
 from safetensors.torch import save_file
 
-from src.models.scene_location_encoding import SceneLocationEncoding
+from src.models.additive_location_projection import AdditiveLocationProjection
+from src.models.scene_location_encoding import (
+    SceneLocationEncoding,
+    SceneLocationFeatures,
+)
 
 
 def _install_qwen3_test_stubs():
@@ -84,6 +88,20 @@ def _install_qwen3_test_stubs():
 _install_qwen3_test_stubs()
 qwen3_module = importlib.import_module("src.lightning_modules.qwen3_vl_module")
 Qwen3VLModule = qwen3_module.Qwen3VLModule
+
+
+class _EvalCallable:
+    def __init__(self, function):
+        self.function = function
+        self.training = True
+
+    def eval(self):
+        self.training = False
+        return self
+
+    def __call__(self, *args, **kwargs):
+        return self.function(*args, **kwargs)
+
 
 def _build_encoder_test_module(num_location_tokens: int = 2):
     module = object.__new__(Qwen3VLModule)
@@ -344,6 +362,9 @@ class InsertTokenHelpersTest(unittest.TestCase):
         }
 
         class FakeEncoder:
+            def eval(self):
+                return self
+
             def __call__(self, imagery, bands):
                 self.imagery = imagery
                 self.bands = bands
@@ -396,9 +417,11 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "lon": torch.tensor([2.0], dtype=torch.float64),
             "insert_positions": torch.tensor([1]),
         }
-        module.non_rgb_encoder = lambda imagery, bands: torch.zeros(1, 1, 5)
+        module.non_rgb_encoder = _EvalCallable(
+            lambda imagery, bands: torch.zeros(1, 1, 5)
+        )
         module.non_rgb_modality_projection = lambda features: torch.tensor([[[80.0]]])
-        module.satclip = lambda coords: torch.zeros(1, 3)
+        module.satclip = _EvalCallable(lambda coords: torch.zeros(1, 3))
         module.location_modality_projection = lambda features: torch.tensor([[[90.0]]])
 
         kwargs = {
@@ -419,7 +442,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "lon": torch.tensor([2.0], dtype=torch.float64),
             "insert_positions": torch.tensor([1]),
         }
-        module.satclip = lambda coords: coords.float()
+        module.satclip = _EvalCallable(lambda coords: coords.float())
         module.location_modality_projection = lambda features: features[:, :1].unsqueeze(-1)
 
         class FakeCache:
@@ -453,7 +476,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
             "lon": torch.tensor([2.0, 4.0], dtype=torch.float64),
             "insert_positions": torch.tensor([1, 1]),
         }
-        module.satclip = lambda coords: coords.float()
+        module.satclip = _EvalCallable(lambda coords: coords.float())
         module.location_modality_projection = lambda features: features[:, :1].unsqueeze(-1)
         kwargs = {
             "inputs_embeds": torch.tensor(
@@ -499,7 +522,7 @@ class PrepareModelInputsTest(unittest.TestCase):
             )
         )
 
-        module.satclip = lambda coords: coords.float()
+        module.satclip = _EvalCallable(lambda coords: coords.float())
         module.location_modality_projection = lambda features: torch.tensor(
             [[[90.0], [91.0]]]
         )
@@ -811,6 +834,21 @@ class AdapterArtifactSetupTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "loc_mode='loc_encoding'"):
             Qwen3VLModule(location_encoding_scope="all_visual")
 
+    def test_projected_additive_modes_require_fixed_scale(self):
+        with self.assertRaisesRegex(ValueError, "learned_scale=false"):
+            Qwen3VLModule(
+                loc_mode="loc_encoding",
+                location_encoding_scope="s1s2",
+                location_encoding_projection="linear",
+            )
+
+    def test_satclip_additive_mode_requires_linear_projection(self):
+        with self.assertRaisesRegex(ValueError, "projection='linear'"):
+            Qwen3VLModule(
+                loc_mode="loc_additive_satclip",
+                location_encoding_scope="s1s2",
+            )
+
     def test_location_projection_lr_multiplier_must_be_positive(self):
         with self.assertRaisesRegex(ValueError, "location_projection_lr_multiplier"):
             Qwen3VLModule(location_projection_lr_multiplier=0.0)
@@ -1117,6 +1155,23 @@ class SceneLocationEncodingIntegrationTest(unittest.TestCase):
         self.assertIsNotNone(module._location_encoding_state)
         self.assertIsNone(module._location_insertion_state)
 
+    def test_satclip_additive_conditioning_does_not_insert_tokens(self):
+        module = _build_encoder_test_module()
+        module.loc_mode = "loc_additive_satclip"
+        module.non_rgb_conditioning = "disabled"
+        original_ids = torch.tensor([[1, 2, 3]])
+        batch = {
+            "input_ids": original_ids.clone(),
+            "lat": torch.tensor([48.0], dtype=torch.float64),
+            "lon": torch.tensor([12.0], dtype=torch.float64),
+        }
+
+        model_batch, _, _, _, _, _ = module._prepare_model_inputs(batch)
+
+        self.assertTrue(torch.equal(model_batch["input_ids"], original_ids))
+        self.assertIsNotNone(module._location_encoding_state)
+        self.assertIsNone(module._location_insertion_state)
+
     def test_projected_s1s2_tokens_are_replaced_before_encoding_is_added(self):
         module = self._build_module()
         module._location_insertion_state = None
@@ -1129,7 +1184,9 @@ class SceneLocationEncodingIntegrationTest(unittest.TestCase):
             "bands": None,
             "insert_positions": torch.tensor([1]),
         }
-        module.non_rgb_encoder = lambda imagery, bands: torch.zeros(1, 2, 5)
+        module.non_rgb_encoder = _EvalCallable(
+            lambda imagery, bands: torch.zeros(1, 2, 5)
+        )
         module.non_rgb_modality_projection = lambda features: torch.full(
             (1, 2, 4), 10.0
         )
@@ -1252,6 +1309,197 @@ class SceneLocationEncodingIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(location_group["initial_lr"], module.learning_rate)
         self.assertEqual(location_group["weight_decay"], 0.0)
+
+
+class ProjectedAdditiveLocationIntegrationTest(unittest.TestCase):
+    @staticmethod
+    def _build_direct_module() -> Qwen3VLModule:
+        module = object.__new__(Qwen3VLModule)
+        module.device = torch.device("cpu")
+        module.loc_mode = "loc_encoding"
+        module.location_encoding_scope = "s1s2"
+        module.location_encoding_scale_init = 0.1
+        module.location_encoding_feature_dim = 4
+        module.num_non_rgb_tokens = 2
+        module.scene_location_encoding = None
+        module.scene_location_features = SceneLocationFeatures(4)
+        module.additive_location_projection = AdditiveLocationProjection(4, 4)
+        module._print = lambda *args, **kwargs: None
+        module._location_encoding_norm_logged = False
+        return module
+
+    def test_direct_projection_changes_only_s1s2_tokens(self):
+        module = self._build_direct_module()
+        kwargs = {
+            "inputs_embeds": torch.zeros(1, 7, 4),
+            "visual_pos_masks": torch.tensor(
+                [[False, False, False, False, True, True, False]]
+            ),
+        }
+
+        module._apply_scene_location_encoding(
+            kwargs,
+            encoding_state={
+                "lat": torch.tensor([48.0]),
+                "lon": torch.tensor([12.0]),
+            },
+            non_rgb_state={"insert_positions": torch.tensor([1])},
+        )
+
+        changed = kwargs["inputs_embeds"].ne(0).any(dim=-1)
+        self.assertTrue(
+            torch.equal(
+                changed,
+                torch.tensor(
+                    [[False, True, True, False, False, False, False]]
+                ),
+            )
+        )
+
+    def test_satclip_receives_longitude_then_latitude(self):
+        module = self._build_direct_module()
+        module.loc_mode = "loc_additive_satclip"
+        module.scene_location_features = None
+        captured = {}
+
+        class FakeSatclip:
+            checkpoint_metadata = {"embed_dim": 4}
+
+            def eval(self):
+                return self
+
+            def __call__(self, coordinates):
+                captured["coordinates"] = coordinates.clone()
+                return torch.cat([coordinates, coordinates], dim=-1)
+
+        module.satclip = FakeSatclip()
+        kwargs = {
+            "inputs_embeds": torch.zeros(1, 5, 4),
+            "visual_pos_masks": torch.tensor(
+                [[False, False, False, True, False]]
+            ),
+        }
+
+        module._apply_scene_location_encoding(
+            kwargs,
+            encoding_state={
+                "lat": torch.tensor([48.0]),
+                "lon": torch.tensor([12.0]),
+            },
+            non_rgb_state={"insert_positions": torch.tensor([1])},
+        )
+
+        torch.testing.assert_close(
+            captured["coordinates"],
+            torch.tensor([[12.0, 48.0]], dtype=torch.float64),
+        )
+        changed = kwargs["inputs_embeds"].ne(0).any(dim=-1)
+        self.assertTrue(
+            torch.equal(
+                changed,
+                torch.tensor(
+                    [[False, True, True, False, False]],
+                ),
+            )
+        )
+
+    def test_frozen_side_encoders_are_forced_to_eval_mode(self):
+        module = self._build_direct_module()
+
+        class DropoutSatclip(torch.nn.Module):
+            def forward(self, coordinates):
+                features = torch.cat([coordinates, coordinates], dim=-1).float()
+                return torch.nn.functional.dropout(
+                    features,
+                    p=0.9,
+                    training=self.training,
+                )
+
+        class DropoutNonRGB(torch.nn.Module):
+            def forward(self, imagery, bands):
+                return torch.nn.functional.dropout(
+                    imagery,
+                    p=0.9,
+                    training=self.training,
+                )
+
+        module.satclip = DropoutSatclip().train()
+        module.non_rgb_encoder = DropoutNonRGB().train()
+        lat = torch.tensor([48.0])
+        lon = torch.tensor([12.0])
+        imagery = torch.ones(1, 2, 2)
+
+        first_location = module._encode_satclip_coordinates(lat, lon)
+        second_location = module._encode_satclip_coordinates(lat, lon)
+        first_imagery = module._encode_non_rgb_imagery(imagery, None)
+        second_imagery = module._encode_non_rgb_imagery(imagery, None)
+
+        self.assertFalse(module.satclip.training)
+        self.assertFalse(module.non_rgb_encoder.training)
+        self.assertTrue(torch.equal(first_location, second_location))
+        self.assertTrue(torch.equal(first_imagery, second_imagery))
+
+    def test_artifact_manifest_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            saved = self._build_direct_module()
+            saved.additive_location_projection.projection.weight.data.fill_(0.25)
+            save_file(
+                saved.additive_location_projection.state_dict(),
+                Path(tmpdir) / "additive_location_projection.safetensors",
+            )
+            manifest = saved.get_additive_location_projection_manifest()
+            (Path(tmpdir) / "additive_location_projection_config.json").write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+
+            loaded = self._build_direct_module()
+            loaded.adapter_dir = tmpdir
+            loaded.additive_location_projection.projection.weight.data.zero_()
+            loaded._load_additive_location_projection_artifacts()
+            torch.testing.assert_close(
+                loaded.additive_location_projection.projection.weight,
+                torch.full_like(
+                    loaded.additive_location_projection.projection.weight,
+                    0.25,
+                ),
+            )
+
+            loaded.location_encoding_scope = "all_visual"
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                loaded._load_additive_location_projection_artifacts()
+
+    def test_bridge_uses_location_projection_decay_group(self):
+        module = self._build_direct_module()
+        module.model = torch.nn.Linear(4, 4)
+        module.location_modality_projection = None
+        module.non_rgb_modality_projection = None
+        module.learning_rate = 2e-4
+        module.location_projection_lr_multiplier = 5.0
+        module.non_rgb_projection_lr_multiplier = 5.0
+        module.weight_decay = 0.01
+        module.max_steps = 10
+        module.warmup_ratio = 0.1
+        module._trainer_or_none = lambda: None
+
+        original_optimizer = qwen3_module.bnb.optim.AdamW8bit
+        try:
+            qwen3_module.bnb.optim.AdamW8bit = torch.optim.AdamW
+            optimizer_config = module.configure_optimizers()
+        finally:
+            qwen3_module.bnb.optim.AdamW8bit = original_optimizer
+
+        location_group = next(
+            group
+            for group in optimizer_config["optimizer"].param_groups
+            if group["name"] == "location_projection_decay"
+        )
+        self.assertEqual(location_group["initial_lr"], 1e-3)
+        self.assertEqual(location_group["weight_decay"], 0.01)
+        self.assertIn(
+            module.additive_location_projection.projection.weight,
+            location_group["params"],
+        )
 
 
 if __name__ == "__main__":

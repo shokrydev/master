@@ -57,6 +57,15 @@ def get_satclip(ckpt_path: str, device="cpu") -> LocationEncoder:
     loc_encoder = LocationEncoder(posenc, nnet).double()
     loc_encoder.load_state_dict(state_dict)
     loc_encoder.eval()
+    loc_encoder.checkpoint_metadata = {
+        "embed_dim": int(hp["embed_dim"]),
+        "le_type": str(hp["le_type"]),
+        "legendre_polys": int(hp["legendre_polys"]),
+        "harmonics_calculation": str(hp["harmonics_calculation"]),
+        "pe_type": str(hp["pe_type"]),
+        "capacity": int(hp["capacity"]),
+        "num_hidden_layers": int(hp["num_hidden_layers"]),
+    }
 
     return loc_encoder
 

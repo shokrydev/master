@@ -4,29 +4,18 @@ import torch
 from torch import nn
 
 
-class SceneLocationEncoding(nn.Module):
-    """Deterministic latitude/longitude sine-cosine encoding with one scale."""
+class SceneLocationFeatures(nn.Module):
+    """Parameter-free latitude/longitude sine-cosine features."""
 
     encoding_type = "prithvi_sincos_2d_v1"
 
-    def __init__(
-        self,
-        hidden_size: int,
-        *,
-        scale_init: float = 0.1,
-        learned_scale: bool = True,
-    ) -> None:
+    def __init__(self, feature_dim: int) -> None:
         super().__init__()
-        if hidden_size <= 0 or hidden_size % 4 != 0:
-            raise ValueError("hidden_size must be positive and divisible by four")
-        if not math.isfinite(scale_init) or scale_init <= 0:
-            raise ValueError("scale_init must be a finite positive number")
+        if feature_dim <= 0 or feature_dim % 4 != 0:
+            raise ValueError("feature_dim must be positive and divisible by four")
 
-        self.hidden_size = int(hidden_size)
-        self.learned_scale = bool(learned_scale)
-        self.scale_initialization = float(scale_init)
-
-        coordinate_feature_size = self.hidden_size // 2
+        self.feature_dim = int(feature_dim)
+        coordinate_feature_size = self.feature_dim // 2
         frequency_count = coordinate_feature_size // 2
         frequencies = 1.0 / (
             10000.0
@@ -36,12 +25,6 @@ class SceneLocationEncoding(nn.Module):
             )
         )
         self.register_buffer("frequencies", frequencies, persistent=False)
-
-        scale = torch.tensor(float(scale_init), dtype=torch.float32)
-        if self.learned_scale:
-            self.scale = nn.Parameter(scale)
-        else:
-            self.register_buffer("scale", scale)
 
     def _encode_coordinate(self, coordinate: torch.Tensor) -> torch.Tensor:
         phases = coordinate.float().unsqueeze(-1) * self.frequencies.unsqueeze(0)
@@ -61,8 +44,38 @@ class SceneLocationEncoding(nn.Module):
 
         lat_encoding = self._encode_coordinate(lat)
         lon_encoding = self._encode_coordinate(lon)
-        encoding = torch.cat([lat_encoding, lon_encoding], dim=-1)
-        return self.scale * encoding
+        return torch.cat([lat_encoding, lon_encoding], dim=-1)
+
+
+class SceneLocationEncoding(nn.Module):
+    """Deterministic latitude/longitude sine-cosine encoding with one scale."""
+
+    encoding_type = "prithvi_sincos_2d_v1"
+
+    def __init__(
+        self,
+        hidden_size: int,
+        *,
+        scale_init: float = 0.1,
+        learned_scale: bool = True,
+    ) -> None:
+        super().__init__()
+        if not math.isfinite(scale_init) or scale_init <= 0:
+            raise ValueError("scale_init must be a finite positive number")
+
+        self.hidden_size = int(hidden_size)
+        self.learned_scale = bool(learned_scale)
+        self.scale_initialization = float(scale_init)
+        self.features = SceneLocationFeatures(self.hidden_size)
+
+        scale = torch.tensor(float(scale_init), dtype=torch.float32)
+        if self.learned_scale:
+            self.scale = nn.Parameter(scale)
+        else:
+            self.register_buffer("scale", scale)
+
+    def forward(self, lat: torch.Tensor, lon: torch.Tensor) -> torch.Tensor:
+        return self.scale * self.features(lat, lon)
 
     def manifest(self, *, scope: str) -> dict[str, object]:
         return {

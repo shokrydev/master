@@ -1,0 +1,17 @@
+# Add frozen SatCLIP L=40 features to existing S1/S2 tokens through the same
+# small alignment bridge used by projected direct location encoding.
+
+paths:
+  satclip_checkpoint_path: ${oc.env:SATCLIP_L40_CHECKPOINT_PATH,data/satclip/satclip-vit16-l40.ckpt}
+
+model:
+  init_args:
+    loc_mode: loc_additive_satclip
+    location_encoding_scope: s1s2
+    location_encoding_projection: linear
+    location_encoding_feature_dim: 256
+    location_encoding_scale_init: 0.1
+    location_encoding_learned_scale: false
+    location_projection_lr_multiplier: 5.0
+    satclip_checkpoint: ${paths.satclip_checkpoint_path}
+    satclip_dim: 256

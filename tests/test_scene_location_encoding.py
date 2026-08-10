@@ -2,10 +2,23 @@ import unittest
 
 import torch
 
-from src.models.scene_location_encoding import SceneLocationEncoding
+from src.models.scene_location_encoding import (
+    SceneLocationEncoding,
+    SceneLocationFeatures,
+)
 
 
 class SceneLocationEncodingTest(unittest.TestCase):
+    def test_parameter_free_features_have_requested_width(self):
+        features = SceneLocationFeatures(feature_dim=8)
+        output = features(
+            torch.tensor([48.0, 49.0]),
+            torch.tensor([12.0, 13.0]),
+        )
+
+        self.assertEqual(output.shape, (2, 8))
+        self.assertEqual(list(features.parameters()), [])
+
     def test_output_shape_and_coordinate_order_are_deterministic(self):
         encoder = SceneLocationEncoding(
             hidden_size=8,
@@ -35,6 +48,7 @@ class SceneLocationEncodingTest(unittest.TestCase):
 
         self.assertEqual(set(named_parameters), {"scale"})
         self.assertAlmostEqual(float(named_parameters["scale"].detach()), 0.1)
+        self.assertEqual(set(encoder.state_dict()), {"scale"})
 
     def test_fixed_scale_has_no_trainable_parameters(self):
         encoder = SceneLocationEncoding(
@@ -63,6 +77,9 @@ class SceneLocationEncodingTest(unittest.TestCase):
     def test_hidden_size_must_be_divisible_by_four(self):
         with self.assertRaisesRegex(ValueError, "divisible by four"):
             SceneLocationEncoding(hidden_size=6)
+
+        with self.assertRaisesRegex(ValueError, "divisible by four"):
+            SceneLocationFeatures(feature_dim=6)
 
 
 if __name__ == "__main__":

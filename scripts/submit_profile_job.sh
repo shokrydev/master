@@ -96,10 +96,10 @@ case "$SIZE" in
 esac
 
 case "$CONDITION" in
-    no_loc|loc_text|loc_embed|loc_encoding)
+    no_loc|loc_text|loc_embed|loc_encoding|loc_additive_satclip)
         ;;
     *)
-        echo "Invalid --condition '$CONDITION'. Use no_loc, loc_text, loc_embed or loc_encoding."
+        echo "Invalid --condition '$CONDITION'. Use no_loc, loc_text, loc_embed, loc_encoding or loc_additive_satclip."
         exit 1
         ;;
 esac
@@ -121,6 +121,9 @@ REQUIRED_ENV_VARS=(
 )
 if [ "$CONDITION" = "loc_embed" ]; then
     REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
+fi
+if [ "$CONDITION" = "loc_additive_satclip" ]; then
+    REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
 fi
 
 MISSING_ENV_VARS=()
