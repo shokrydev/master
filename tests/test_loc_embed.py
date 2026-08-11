@@ -11,6 +11,7 @@ import torch
 from safetensors.torch import save_file
 
 from src.models.additive_location_projection import AdditiveLocationProjection
+from src.models.location_modality_projection import LocationModalityProjection
 from src.models.scene_location_encoding import (
     SceneLocationEncoding,
     SceneLocationFeatures,
@@ -821,6 +822,56 @@ class AdapterArtifactSetupTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "loc_mode='loc_embed'"):
             Qwen3VLModule(location_embed_marker="Scene coordinates:")
 
+    def test_compact_location_projection_requires_loc_embed_mode(self):
+        with self.assertRaisesRegex(ValueError, "only configurable"):
+            Qwen3VLModule(location_projection_architecture="linear")
+
+    def test_invalid_location_projection_architecture_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "architecture"):
+            Qwen3VLModule(location_projection_architecture="wide")
+
+    def test_compact_location_projection_is_accepted_for_loc_embed(self):
+        module = Qwen3VLModule(
+            loc_mode="loc_embed",
+            location_embed_marker="Scene coordinates:",
+            location_projection_architecture="linear",
+        )
+
+        self.assertEqual(module.location_projection_architecture, "linear")
+
+    def test_loc_embed_setup_constructs_selected_projection_architecture(self):
+        satclip_module = importlib.import_module("src.models.satclip")
+        original_get_satclip = satclip_module.get_satclip
+        fake_satclip = torch.nn.Identity()
+        fake_satclip.checkpoint_metadata = {"embed_dim": 4}
+        satclip_module.get_satclip = lambda *args, **kwargs: fake_satclip
+        try:
+            module = object.__new__(Qwen3VLModule)
+            module.device = torch.device("cpu")
+            module.satclip_checkpoint = "/tmp/satclip.ckpt"
+            module.satclip_dim = 4
+            module.num_location_tokens = 2
+            module.location_projection_architecture = "linear"
+            module._get_text_hidden_size = lambda: 8
+            module._register_decoder_input_hook = lambda: None
+            module._print = lambda *args, **kwargs: None
+
+            module._setup_loc_embed()
+        finally:
+            satclip_module.get_satclip = original_get_satclip
+
+        self.assertEqual(
+            module.location_modality_projection.architecture,
+            "linear",
+        )
+        self.assertEqual(
+            sum(
+                parameter.numel()
+                for parameter in module.location_modality_projection.parameters()
+            ),
+            80,
+        )
+
     def test_loc_encoding_requires_supported_scope(self):
         with self.assertRaisesRegex(ValueError, "location_encoding_scope"):
             Qwen3VLModule(loc_mode="loc_encoding")
@@ -978,6 +1029,26 @@ class AdapterArtifactSetupTest(unittest.TestCase):
 
 
 class LocationProjectionArtifactLoadTest(unittest.TestCase):
+    @staticmethod
+    def _build_manifest_module(architecture: str) -> Qwen3VLModule:
+        module = object.__new__(Qwen3VLModule)
+        module.device = torch.device("cpu")
+        module.location_projection_architecture = architecture
+        module.location_embed_marker = "Scene coordinates:"
+        module.satclip = types.SimpleNamespace(
+            checkpoint_metadata={
+                "embed_dim": 4,
+                "legendre_polys": 40,
+            }
+        )
+        module.location_modality_projection = LocationModalityProjection(
+            satclip_dim=4,
+            hidden_size=8,
+            num_tokens=2,
+            architecture=architecture,
+        )
+        return module
+
     def test_load_location_projection_artifacts_restores_saved_weights(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             saved_projection = torch.nn.Linear(3, 4)
@@ -1007,6 +1078,62 @@ class LocationProjectionArtifactLoadTest(unittest.TestCase):
 
         with self.assertRaises(FileNotFoundError):
             module._load_location_projection_artifacts()
+
+    def test_manifest_validates_and_restores_compact_projection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            saved = self._build_manifest_module("linear")
+            saved.location_modality_projection.proj.weight.data.fill_(0.25)
+            save_file(
+                saved.location_modality_projection.state_dict(),
+                Path(tmpdir) / "location_modality_projection.safetensors",
+            )
+            manifest = saved.get_location_projection_manifest()
+            (Path(tmpdir) / "location_modality_projection_config.json").write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+
+            loaded = self._build_manifest_module("linear")
+            loaded.adapter_dir = tmpdir
+            loaded.location_modality_projection.proj.weight.data.zero_()
+            loaded._load_location_projection_artifacts()
+
+            torch.testing.assert_close(
+                loaded.location_modality_projection.proj.weight,
+                torch.full_like(
+                    loaded.location_modality_projection.proj.weight,
+                    0.25,
+                ),
+            )
+
+    def test_manifest_rejects_projection_architecture_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            saved = self._build_manifest_module("mlp")
+            save_file(
+                saved.location_modality_projection.state_dict(),
+                Path(tmpdir) / "location_modality_projection.safetensors",
+            )
+            (Path(tmpdir) / "location_modality_projection_config.json").write_text(
+                json.dumps(saved.get_location_projection_manifest()),
+                encoding="utf-8",
+            )
+
+            loaded = self._build_manifest_module("linear")
+            loaded.adapter_dir = tmpdir
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                loaded._load_location_projection_artifacts()
+
+    def test_compact_projection_requires_manifest(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module = self._build_manifest_module("linear")
+            module.adapter_dir = tmpdir
+            save_file(
+                module.location_modality_projection.state_dict(),
+                Path(tmpdir) / "location_modality_projection.safetensors",
+            )
+
+            with self.assertRaisesRegex(FileNotFoundError, "require a manifest"):
+                module._load_location_projection_artifacts()
 
     def test_load_non_rgb_projection_artifacts_restores_saved_weights(self):
         with tempfile.TemporaryDirectory() as tmpdir:

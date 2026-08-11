@@ -65,6 +65,10 @@ class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
                 non_rgb_modality_projection=torch.nn.Linear(4, 5),
                 scene_location_encoding=SceneLocationEncoding(8),
                 additive_location_projection=torch.nn.Linear(6, 7, bias=False),
+                get_location_projection_manifest=lambda: {
+                    "version": 1,
+                    "architecture": "linear",
+                },
                 get_scene_location_encoding_manifest=lambda: {
                     "version": 1,
                     "scope": "all_visual",
@@ -82,6 +86,9 @@ class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
             self.assertTrue((Path(tmpdir) / "adapter_model.safetensors").exists())
             self.assertTrue((Path(tmpdir) / "tokenizer.json").exists())
             self.assertTrue((Path(tmpdir) / "location_modality_projection.safetensors").exists())
+            self.assertTrue(
+                (Path(tmpdir) / "location_modality_projection_config.json").exists()
+            )
             self.assertTrue((Path(tmpdir) / "non_rgb_modality_projection.safetensors").exists())
             self.assertTrue((Path(tmpdir) / "location_encoding.safetensors").exists())
             self.assertTrue((Path(tmpdir) / "location_encoding_config.json").exists())
@@ -98,6 +105,7 @@ class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
             callback = SaveQLoRAAdaptersCallback(dirpath=tmpdir)
             stale_paths = (
                 "location_modality_projection.safetensors",
+                "location_modality_projection_config.json",
                 "non_rgb_modality_projection.safetensors",
                 "location_encoding.safetensors",
                 "location_encoding_config.json",

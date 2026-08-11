@@ -38,11 +38,26 @@ class SaveQLoRAAdaptersCallback(Callback):
         pl_module.tokenizer.save_pretrained(dirpath)
 
         projection_path = dirpath / "location_modality_projection.safetensors"
+        projection_manifest_path = (
+            dirpath / "location_modality_projection_config.json"
+        )
         location_projection = getattr(pl_module, "location_modality_projection", None)
         if location_projection is not None:
+            manifest = pl_module.get_location_projection_manifest()
+            if manifest is None:
+                raise RuntimeError(
+                    "Location projection is active but its manifest is missing"
+                )
             save_file(location_projection.state_dict(), projection_path)
-        elif projection_path.exists():
-            projection_path.unlink()
+            projection_manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        else:
+            if projection_path.exists():
+                projection_path.unlink()
+            if projection_manifest_path.exists():
+                projection_manifest_path.unlink()
 
         non_rgb_projection_path = dirpath / "non_rgb_modality_projection.safetensors"
         non_rgb_projection = getattr(pl_module, "non_rgb_modality_projection", None)

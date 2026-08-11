@@ -88,6 +88,7 @@ class Qwen3VLModule(L.LightningModule):
         satclip_checkpoint: str | None = None,
         satclip_dim: int = 256,
         num_location_tokens: int = 1,
+        location_projection_architecture: Literal["mlp", "linear"] = "mlp",
         location_projection_lr_multiplier: float = 1.0,
         prediction_export_path: str | None = None,
         run_label: str | None = None,
@@ -161,6 +162,8 @@ class Qwen3VLModule(L.LightningModule):
                 SatCLIP-based location modes.
             satclip_dim: SatCLIP embedding dimension
             num_location_tokens: Number of location tokens to insert before the visual block (encoder mode)
+            location_projection_architecture: SatCLIP-to-token projection:
+                original ``mlp`` or compact ``linear``.
             location_projection_lr_multiplier: Learning-rate multiplier for
                 the randomly initialized SatCLIP-to-Qwen projection.
             prediction_export_path: If set, stream per-sample test predictions to this JSONL path.
@@ -191,6 +194,15 @@ class Qwen3VLModule(L.LightningModule):
             raise ValueError("loc_mode='loc_embed' requires location_embed_marker")
         if loc_mode != "loc_embed" and location_embed_marker is not None:
             raise ValueError("location_embed_marker is only used when loc_mode='loc_embed'")
+        if location_projection_architecture not in {"mlp", "linear"}:
+            raise ValueError(
+                "location_projection_architecture must be 'mlp' or 'linear'"
+            )
+        if loc_mode != "loc_embed" and location_projection_architecture != "mlp":
+            raise ValueError(
+                "location_projection_architecture is only configurable when "
+                "loc_mode='loc_embed'"
+            )
         if (
             loc_mode in ADDITIVE_LOCATION_MODES
             and location_encoding_scope not in {"all_visual", "s1s2"}
@@ -342,6 +354,7 @@ class Qwen3VLModule(L.LightningModule):
         self.satclip_checkpoint = satclip_checkpoint
         self.satclip_dim = satclip_dim
         self.num_location_tokens = num_location_tokens
+        self.location_projection_architecture = location_projection_architecture
         self.location_projection_lr_multiplier = location_projection_lr_multiplier
         self.prediction_export_path = str(prediction_export_path) if prediction_export_path else None
         self.run_label = run_label
@@ -609,11 +622,44 @@ class Qwen3VLModule(L.LightningModule):
     def _load_location_projection_artifacts(self) -> None:
         """Load the saved location projection that lives outside the PEFT adapter package."""
         projection_path = Path(self.adapter_dir) / "location_modality_projection.safetensors"
+        manifest_path = Path(self.adapter_dir) / "location_modality_projection_config.json"
         if not projection_path.is_file():
             raise FileNotFoundError(f"Missing location projection artifacts: {projection_path}")
 
+        if manifest_path.is_file():
+            actual_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            expected_manifest = self.get_location_projection_manifest()
+            if actual_manifest != expected_manifest:
+                raise ValueError(
+                    "Location projection config does not match the saved adapter: "
+                    f"expected {expected_manifest}, found {actual_manifest}"
+                )
+        elif getattr(self, "location_projection_architecture", "mlp") != "mlp":
+            raise FileNotFoundError(
+                "Compact location projection adapters require a manifest: "
+                f"{manifest_path}"
+            )
+
         state_dict = load_file(projection_path, device=str(self.device))
         self.location_modality_projection.load_state_dict(state_dict)
+
+    def get_location_projection_manifest(self) -> dict[str, object] | None:
+        if self.location_modality_projection is None:
+            return None
+        metadata = getattr(self.satclip, "checkpoint_metadata", None)
+        if metadata is None:
+            raise RuntimeError("Loaded SatCLIP encoder has no checkpoint metadata")
+        manifest = self.location_modality_projection.manifest()
+        manifest.update(
+            {
+                "feature_source": "satclip",
+                "satclip": metadata,
+                "coordinate_order": ["longitude", "latitude"],
+                "location_embed_marker": self.location_embed_marker,
+                "token_placement": "before_vision_start",
+            }
+        )
+        return manifest
 
     def _load_non_rgb_projection_artifacts(self) -> None:
         """Load the saved non-RGB projection that lives outside the PEFT adapter package."""
@@ -838,12 +884,14 @@ class Qwen3VLModule(L.LightningModule):
             satclip_dim=self.satclip_dim,
             hidden_size=hidden_size,
             num_tokens=self.num_location_tokens,
+            architecture=self.location_projection_architecture,
         ).to(self.device)
 
         self._register_decoder_input_hook()
         self._print(
             f"LocationModalityProjection: "
-            f"{self.satclip_dim} -> {hidden_size} x {self.num_location_tokens}"
+            f"{self.satclip_dim} -> {hidden_size} x {self.num_location_tokens}; "
+            f"architecture={self.location_projection_architecture}"
         )
 
     def _encode_satclip_coordinates(
