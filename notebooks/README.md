@@ -17,11 +17,15 @@ Available notebooks:
 
 - `training_diagnostics.ipynb`: compares synced TensorBoard loss curves and
   qualitative generations.
-- `benchmark_2b_core.ipynb`: complete 2B core comparison with matched
-  shuffled-coordinate controls.
+- `benchmark_2b_core.ipynb`: two-seed full-budget 2B core comparison plus the
+  selected additive-SatCLIP extension and matched shuffled-coordinate controls.
 - `benchmark_4b_core.ipynb`: complete 4B core comparison with matched
   shuffled-coordinate controls.
-- `ablation_2b_1000_steps.ipynb`: 2B configuration-selection experiments.
+- `benchmark_uncertainty.ipynb`: paired patch-cluster bootstrap intervals for
+  core and shuffled-coordinate benchmark contrasts across model sizes.
+- `ablation_2b_1000_steps.ipynb`: comprehensive repaired-placement 2B
+  1000-step development comparison, including weaker controls, shuffled
+  coordinates, architecture ablations and cross-seed replication.
 - `archive/benchmark_2b_historical.ipynb`: superseded historical-placement
   benchmark retained for debugging and provenance.
 
