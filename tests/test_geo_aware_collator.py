@@ -69,6 +69,8 @@ class TestGeoAwareCollator(unittest.TestCase):
         self.assertEqual(messages[0]["role"], "system")
         self.assertEqual(messages[1]["role"], "user")
         self.assertEqual(messages[2]["role"], "assistant")
+        self.assertEqual(messages[1]["content"][0]["type"], "image")
+        self.assertEqual(messages[1]["content"][1]["type"], "text")
         self.assertEqual(messages[2]["content"][0]["text"], "caption a")
 
         self.assertIn("lat", batch)
@@ -82,6 +84,36 @@ class TestGeoAwareCollator(unittest.TestCase):
         self.assertEqual(batch["climate_zone"], ["Cfb"])
         self.assertTrue(torch.equal(batch["lat"], torch.tensor([10.5], dtype=torch.float64)))
         self.assertTrue(torch.equal(batch["lon"], torch.tensor([20.5], dtype=torch.float64)))
+
+    def test_uses_model_target_but_preserves_native_target_for_scoring(self) -> None:
+        captured = {}
+
+        def inner_collator(cleaned):
+            captured["cleaned"] = cleaned
+            return {"input_ids": torch.tensor([[1, 2, 3]])}
+
+        collator = GeoAwareCollator(inner_collator)
+        batch = collator(
+            [
+                {
+                    "image": object(),
+                    "input_text": "Locate the referenced region.",
+                    "target_texts": ["[0.64 0.0, 1.0 0.71]"],
+                    "model_target_texts": [
+                        "<|box_start|>(640,0),(1000,710)<|box_end|>"
+                    ],
+                    "lat": 10.5,
+                    "lon": 20.5,
+                }
+            ]
+        )
+
+        assistant_text = captured["cleaned"][0]["messages"][-1]["content"][0]["text"]
+        self.assertEqual(
+            assistant_text,
+            "<|box_start|>(640,0),(1000,710)<|box_end|>",
+        )
+        self.assertEqual(batch["target_texts"], [["[0.64 0.0, 1.0 0.71]"]])
 
     def test_appends_location_text_without_changing_native_prompt_source(self) -> None:
         captured = {}
@@ -107,7 +139,7 @@ class TestGeoAwareCollator(unittest.TestCase):
             ]
         )
 
-        user_text = captured["cleaned"][0]["messages"][0]["content"][0]["text"]
+        user_text = captured["cleaned"][0]["messages"][0]["content"][1]["text"]
         self.assertEqual(
             user_text,
             "Which land cover classes are present?\n"
@@ -138,7 +170,7 @@ class TestGeoAwareCollator(unittest.TestCase):
             ]
         )
 
-        user_text = captured["cleaned"][0]["messages"][0]["content"][0]["text"]
+        user_text = captured["cleaned"][0]["messages"][0]["content"][1]["text"]
         self.assertEqual(
             user_text,
             "Which land cover classes are present?\n"
@@ -170,7 +202,7 @@ class TestGeoAwareCollator(unittest.TestCase):
             ]
         )
 
-        user_text = captured["cleaned"][0]["messages"][0]["content"][0]["text"]
+        user_text = captured["cleaned"][0]["messages"][0]["content"][1]["text"]
         self.assertEqual(
             user_text,
             "Which land cover classes are present?\n"
@@ -209,7 +241,7 @@ class TestGeoAwareCollator(unittest.TestCase):
             ]
         )
 
-        user_text = captured["cleaned"][0]["messages"][0]["content"][0]["text"]
+        user_text = captured["cleaned"][0]["messages"][0]["content"][1]["text"]
         self.assertEqual(
             user_text,
             "Which land cover classes are present?\n"

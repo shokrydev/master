@@ -17,6 +17,12 @@ from PIL import Image
 from safetensors.numpy import load as safetensor_load
 from torch.utils.data import DataLoader, Dataset, Subset
 
+from src.bentxt_grounding import (
+    GroundingFormat,
+    format_grounding_prompt,
+    format_grounding_target,
+)
+
 try:
     import lightning.pytorch as pl
 except ImportError:
@@ -46,6 +52,7 @@ _optional_metadata_fields = (
     "country",
     "season",
     "climate_zone",
+    "grounding_format",
 )
 
 """
@@ -202,6 +209,7 @@ def collate_normalized(batch):
     non_rgb_images = []
     input_texts = []
     target_texts = []
+    model_target_texts = []
     latitudes = []
     longitudes = []
     non_rgb_bands = []
@@ -217,6 +225,7 @@ def collate_normalized(batch):
             non_rgb_bands.append(item.get("non_rgb_bands"))
         input_texts.append(item["input_text"])
         target_texts.append(item["target_texts"])
+        model_target_texts.append(item.get("model_target_texts", item["target_texts"]))
         latitudes.append(item["lat"])
         longitudes.append(item["lon"])
         for key, values in optional_metadata.items():
@@ -227,6 +236,7 @@ def collate_normalized(batch):
         "image": images,
         "input_text": input_texts,
         "target_texts": target_texts,
+        "model_target_texts": model_target_texts,
         "lat": torch.tensor(latitudes, dtype=torch.float64),
         "lon": torch.tensor(longitudes, dtype=torch.float64),
     }
@@ -440,6 +450,7 @@ class BENTxTDataset(Dataset):
             splits: Iterable[str] | None = None,
             point_token: str | None = None,
             ref_token: str | None = None,
+            grounding_format: GroundingFormat = "bentxt",
             use_location_redacted_captions: bool = False,
             location_redacted_caption_file: str | Path | None = None,
             coordinate_perturbation: CoordinatePerturbation | None = None,
@@ -472,6 +483,11 @@ class BENTxTDataset(Dataset):
             splits: Optional filter for dataset splits ('train', 'validation', 'test', 'bench').
             point_token: Optional tuple of [start_token, end_token] to wrap <point> tags in text.
             ref_token: Optional tuple of [start_token, end_token] to wrap <ref> tags in text.
+            grounding_format: Model-facing grounding serialization. ``bentxt``
+                preserves the dataset's normalized text format; Qwen3 modes
+                convert prompt points and box targets to Qwen3-VL's 0-1000
+                coordinate grid. ``qwen3_tokens`` also wraps model box targets
+                in Qwen's dedicated box tokens.
             use_location_redacted_captions: Replace captioning targets with
                 the location-redacted caption file while leaving all other task
                 targets unchanged.
@@ -565,6 +581,11 @@ class BENTxTDataset(Dataset):
         self.ref_token = ["", ""] if ref_token is None else ref_token
         if len(self.ref_token) != 2:
             raise ValueError("ref_token must contain exactly two strings")
+        if grounding_format not in {"bentxt", "qwen3_json", "qwen3_tokens"}:
+            raise ValueError(
+                "grounding_format must be one of: bentxt, qwen3_json, qwen3_tokens"
+            )
+        self.grounding_format = grounding_format
 
     def __len__(self):
         """Return the number of samples in the dataset."""
@@ -613,8 +634,12 @@ class BENTxTDataset(Dataset):
         lat = float(sample.latitude)
         lon = float(sample.longitude)
 
-        text_in = sample.input.replace("<ref>", self.ref_token[0]).replace("</ref>", self.ref_token[1])
-        text_in = text_in.replace("<point>", self.point_token[0]).replace("</point>", self.point_token[1])
+        text_in = format_grounding_prompt(
+            sample.input,
+            grounding_format=self.grounding_format,
+            ref_token=self.ref_token,
+            point_token=self.point_token,
+        )
 
         if (
             sample.type == "captioning"
@@ -626,13 +651,22 @@ class BENTxTDataset(Dataset):
             output = sample.output
         else:
             raise NotImplementedError(f"{sample.type} is not supported")
+        raw_output = str(output)
+        model_output = format_grounding_target(
+            raw_output,
+            task_type=str(sample.type),
+            grounding_format=self.grounding_format,
+        )
 
         return {
             "image": image,
             "non_rgb_imagery": non_rgb_imagery,
             "non_rgb_bands": list(self.bands),
             "input_text": text_in,
-            "target_texts": [str(output)],
+            # Keep the dataset-native target for exports and BEN.txt scoring;
+            # the collator uses model_target_texts for teacher forcing.
+            "target_texts": [raw_output],
+            "model_target_texts": [model_output],
             "sample_id": str(sample.ID),
             "patch_id": str(sample.patch_id),
             "task_type": str(sample.type),
@@ -641,6 +675,7 @@ class BENTxTDataset(Dataset):
             "country": str(sample.country),
             "season": str(sample.season),
             "climate_zone": str(sample.climate_zone),
+            "grounding_format": self.grounding_format,
             "lat": lat,
             "lon": lon,
         }
@@ -686,6 +721,7 @@ class BENTxTDataModule(pl.LightningDataModule):
             image_transforms_eval: Callable | None = None,
             point_token: Iterable[str] | None = None,
             ref_token: Iterable[str] | None = None,
+            grounding_format: GroundingFormat = "bentxt",
             use_location_redacted_captions: bool = False,
             location_redacted_caption_file: str | Path | None = None,
             coordinate_perturbation: CoordinatePerturbation | None = None,
@@ -723,6 +759,9 @@ class BENTxTDataModule(pl.LightningDataModule):
             image_transforms_eval: Optional transform applied to normalized non-RGB imagery tensors for evaluation.
             point_token: Optional tuple of [start_token, end_token] to wrap <point> tags in text.
             ref_token: Optional tuple of [start_token, end_token] to wrap <ref> tags in text.
+            grounding_format: Model-facing grounding serialization. Use
+                ``qwen3_tokens`` for Qwen3-VL's dedicated reference/box tokens
+                and 0-1000 grounding grid.
             use_location_redacted_captions: Replace captioning targets with
                 location-redacted captions while leaving all other task targets
                 unchanged.
@@ -792,6 +831,7 @@ class BENTxTDataModule(pl.LightningDataModule):
             "climate_zones": climate_zones,
             "point_token": point_token,
             "ref_token": ref_token,
+            "grounding_format": grounding_format,
             "use_location_redacted_captions": use_location_redacted_captions,
             "location_redacted_caption_file": location_redacted_caption_file,
             "coordinate_perturbation": coordinate_perturbation,

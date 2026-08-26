@@ -92,8 +92,8 @@ class GeoAwareCollator:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": input_text},
                     {"type": "image", "image": image},
+                    {"type": "text", "text": input_text},
                 ],
             }
         )
@@ -165,6 +165,7 @@ class GeoAwareCollator:
             "country": [],
             "season": [],
             "climate_zone": [],
+            "grounding_format": [],
         }
         non_rgb_images = []
         non_rgb_bands = []
@@ -180,6 +181,9 @@ class GeoAwareCollator:
             targets = [str(t) for t in item["target_texts"]]
             if not targets:
                 raise ValueError("Each sample must contain at least one target text")
+            model_targets = [str(t) for t in item.get("model_target_texts", targets)]
+            if not model_targets:
+                raise ValueError("Each sample must contain at least one model target text")
 
             lat = item["lat"]
             lon = item["lon"]
@@ -214,7 +218,7 @@ class GeoAwareCollator:
             messages = self._to_messages(
                 image,
                 input_text,
-                None if self.generation_prompt else targets[0],
+                None if self.generation_prompt else model_targets[0],
             )
             cleaned.append({"messages": messages})
 

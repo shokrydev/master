@@ -2,20 +2,14 @@
 
 from __future__ import annotations
 
-import math
-import re
 from dataclasses import dataclass
 from typing import Literal
+
+from src.bentxt_grounding import parse_bentxt_bbox, parse_qwen3_bbox
 
 BinaryAnswer = Literal["yes", "no"]
 MCQAnswer = Literal["a", "b", "c", "d"]
 BBox = tuple[float, float, float, float]
-
-_FLOAT_PATTERN = r"(?:0(?:\.\d+)?|1(?:\.0+)?|\.\d+)"
-_BBOX_RE = re.compile(
-    rf"^\[\s*({_FLOAT_PATTERN})\s+({_FLOAT_PATTERN})\s*,\s*"
-    rf"({_FLOAT_PATTERN})\s+({_FLOAT_PATTERN})\s*\]$"
-)
 
 
 @dataclass(frozen=True)
@@ -52,19 +46,14 @@ def parse_mcq_answer(text: str) -> ParsedAnswer:
 
 
 def parse_bbox_answer(text: str) -> ParsedAnswer:
-    """Parse one normalized box in the official `[x1 y1, x2 y2]` style."""
-    span = first_answer_span(text)
-    match = _BBOX_RE.fullmatch(span)
-    if not match:
-        return ParsedAnswer(None, False)
-
-    x1, y1, x2, y2 = (float(part) for part in match.groups())
-    values = (x1, y1, x2, y2)
-    if any(not math.isfinite(value) for value in values):
-        return ParsedAnswer(None, False)
-    if not (x1 <= x2 and y1 <= y2):
-        return ParsedAnswer(None, False)
-    return ParsedAnswer(values, True)
+    """Parse BEN-native or Qwen3-VL boxes into normalized BEN coordinates."""
+    bentxt_bbox = parse_bentxt_bbox(first_answer_span(text))
+    if bentxt_bbox is not None:
+        return ParsedAnswer(bentxt_bbox, True)
+    qwen_bbox = parse_qwen3_bbox(text)
+    if qwen_bbox is not None:
+        return ParsedAnswer(qwen_bbox, True)
+    return ParsedAnswer(None, False)
 
 
 def bbox_iou(prediction: BBox, target: BBox) -> float:

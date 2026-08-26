@@ -31,6 +31,17 @@ class TestBENTxTParsing(unittest.TestCase):
         self.assertFalse(parse_bbox_answer("[0.8 0.0, 0.1 0.2]").extracted)
         self.assertFalse(parse_bbox_answer("[0.0 0.0, 1.2 0.2]").extracted)
 
+    def test_bbox_parser_normalizes_qwen3_grounding_formats(self) -> None:
+        parsed = parse_bbox_answer('{"bbox_2d":[640,0,1000,710]}')
+        self.assertTrue(parsed.extracted)
+        self.assertEqual(parsed.value, (0.64, 0.0, 1.0, 0.71))
+
+        wrapped = parse_bbox_answer(
+            "<|box_start|>(640,0),(1000,710)<|box_end|>"
+        )
+        self.assertTrue(wrapped.extracted)
+        self.assertEqual(wrapped.value, parsed.value)
+
     def test_bbox_iou(self) -> None:
         iou = bbox_iou((0.0, 0.0, 1.0, 1.0), (0.5, 0.5, 1.0, 1.0))
         self.assertAlmostEqual(iou, 0.25)

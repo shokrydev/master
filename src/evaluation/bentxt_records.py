@@ -42,6 +42,7 @@ class BENTxTPrediction:
     run_label: str | None = None
     adapter_dir: str | None = None
     model_name_or_path: str | None = None
+    grounding_format: str | None = None
 
 
 def _optional_str(raw: dict[str, Any], key: str) -> str | None:
@@ -99,6 +100,7 @@ def prediction_from_json(raw: dict[str, Any], *, line_number: int | None = None)
         run_label=_optional_str(raw, "run_label"),
         adapter_dir=_optional_str(raw, "adapter_dir"),
         model_name_or_path=_optional_str(raw, "model_name_or_path"),
+        grounding_format=_optional_str(raw, "grounding_format"),
     )
 
 
