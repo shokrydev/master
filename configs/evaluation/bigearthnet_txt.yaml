@@ -39,7 +39,7 @@ data:
     rgb_quantile: 0.90
     ref_token: ["<|object_ref_start|>", "<|object_ref_end|>"]
     point_token: ["", ""]
-    grounding_format: qwen3_tokens
+    grounding_format: qwen3_json
     use_location_redacted_captions: false
     location_redacted_caption_file: null
     coordinate_perturbation: null

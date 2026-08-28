@@ -42,13 +42,13 @@ class TestBENTxTGroundingConversion(unittest.TestCase):
 
         self.assertEqual(
             formatted,
-            "Output a box around the instance positioned at (850, 60).",
+            'Output a box around the instance positioned at {"point_2d":[850,60]}.'
         )
 
     def test_qwen_target_uses_bbox_json_and_1000_grid(self) -> None:
         self.assertEqual(
             bentxt_bbox_to_qwen3_json("[0.64 0.0, 1.0 0.71]"),
-            '{"bbox_2d":[640,0,1000,710]}',
+            '[{"bbox_2d":[640,0,1000,710]}]',
         )
         self.assertEqual(
             format_grounding_target(
@@ -87,7 +87,6 @@ class TestBENTxTGroundingConversion(unittest.TestCase):
         self.assertIsNone(parse_qwen3_bbox('{"bbox_2d":[800,0,100,200]}'))
         self.assertIsNone(parse_qwen3_bbox("[0.64, 0.0, 1.0, 0.71]"))
         self.assertIsNone(parse_qwen3_bbox('{"bbox_2d":[640.5,0,1000,710]}'))
-
 
 if __name__ == "__main__":
     unittest.main()

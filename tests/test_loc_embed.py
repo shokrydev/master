@@ -79,8 +79,10 @@ def _install_qwen3_test_stubs():
     trainer = types.ModuleType("unsloth.trainer")
 
     class UnslothVisionDataCollator:
+        last_init_kwargs = None
+
         def __init__(self, *args, **kwargs):
-            pass
+            type(self).last_init_kwargs = kwargs
 
     trainer.UnslothVisionDataCollator = UnslothVisionDataCollator
     sys.modules["unsloth.trainer"] = trainer
@@ -312,6 +314,38 @@ class InsertTokenHelpersTest(unittest.TestCase):
         finally:
             qwen3_module.FastVisionModel.for_inference = original_for_inference
             qwen3_module.FastVisionModel.for_training = original_for_training
+
+    def test_generation_preserves_content_special_tokens_but_removes_stop_ids(self):
+        box_start_id = 151648
+        eos_id = 151645
+
+        class FakeModel(torch.nn.Module):
+            generation_config = types.SimpleNamespace(eos_token_id=[eos_id])
+
+            def generate(self, **kwargs):
+                return torch.tensor([[1, 2, box_start_id, 42, eos_id, eos_id]])
+
+        decoded = {}
+        module = object.__new__(Qwen3VLModule)
+        module.model = FakeModel()
+        module.max_new_tokens = 4
+        module.tokenizer = types.SimpleNamespace(
+            eos_token_id=eos_id,
+            pad_token_id=151643,
+            decode=lambda token_ids, **kwargs: decoded.update(
+                token_ids=token_ids,
+                kwargs=kwargs,
+            )
+            or "<|box_start|>answer",
+        )
+
+        predictions = module._generate_for_batch(
+            {"input_ids": torch.tensor([[1, 2]])}
+        )
+
+        self.assertEqual(predictions, ["<|box_start|>answer"])
+        self.assertEqual(decoded["token_ids"], [box_start_id, 42])
+        self.assertFalse(decoded["kwargs"]["skip_special_tokens"])
 
     def test_insert_tokens_2d_preserves_order_and_positions(self):
         tensor = torch.tensor([[1, 2, 3, 4], [10, 11, 12, 13]])
@@ -770,6 +804,38 @@ class PrepareModelInputsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires non_rgb_imagery"):
             module._prepare_model_inputs(batch)
 
+    def test_supervision_invariant_requires_prompt_tokens_to_be_ignored(self):
+        module = object.__new__(Qwen3VLModule)
+        module._supervision_mask_validated = False
+        module.tokenizer = types.SimpleNamespace(
+            encode=lambda text, add_special_tokens=False: [20, 21, 22]
+        )
+        module._print = lambda *args, **kwargs: None
+        input_ids = torch.tensor([[10, 999, 20, 21, 22, 30, 151645]])
+        labels = torch.tensor([[-100, -100, -100, -100, -100, 30, 151645]])
+        batch = {
+            "input_ids": input_ids,
+            "labels": labels,
+            "attention_mask": torch.ones_like(input_ids),
+        }
+
+        module._validate_supervision_mask(
+            batch,
+            insert_positions=None,
+            num_inserted_tokens=0,
+        )
+
+        self.assertTrue(module._supervision_mask_validated)
+        module._supervision_mask_validated = False
+        bad_batch = dict(batch, labels=labels.clone())
+        bad_batch["labels"][0, 1] = 999
+        with self.assertRaisesRegex(ValueError, "Assistant-only loss"):
+            module._validate_supervision_mask(
+                bad_batch,
+                insert_positions=None,
+                num_inserted_tokens=0,
+            )
+
 
 class AdapterArtifactSetupTest(unittest.TestCase):
     def test_fit_rejects_adapter_dir(self):
@@ -977,6 +1043,14 @@ class AdapterArtifactSetupTest(unittest.TestCase):
 
             self.assertEqual(calls["model_name"], "/tmp/adapter")
             self.assertNotIn("wrapped_with_peft", calls)
+            self.assertEqual(
+                qwen3_module.UnslothVisionDataCollator.last_init_kwargs,
+                {
+                    "train_on_responses_only": True,
+                    "instruction_part": "<|im_start|>user\n",
+                    "response_part": "<|im_start|>assistant\n",
+                },
+            )
         finally:
             qwen3_module.FastVisionModel.from_pretrained = original_from_pretrained
             qwen3_module.FastVisionModel.get_peft_model = original_get_peft_model

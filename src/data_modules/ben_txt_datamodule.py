@@ -484,10 +484,9 @@ class BENTxTDataset(Dataset):
             point_token: Optional tuple of [start_token, end_token] to wrap <point> tags in text.
             ref_token: Optional tuple of [start_token, end_token] to wrap <ref> tags in text.
             grounding_format: Model-facing grounding serialization. ``bentxt``
-                preserves the dataset's normalized text format; Qwen3 modes
-                convert prompt points and box targets to Qwen3-VL's 0-1000
-                coordinate grid. ``qwen3_tokens`` also wraps model box targets
-                in Qwen's dedicated box tokens.
+                preserves the dataset's normalized text format;
+                ``qwen3_json`` converts prompt points and box targets to
+                Qwen3-VL's documented JSON interface and 0-1000 grid.
             use_location_redacted_captions: Replace captioning targets with
                 the location-redacted caption file while leaving all other task
                 targets unchanged.
@@ -581,10 +580,8 @@ class BENTxTDataset(Dataset):
         self.ref_token = ["", ""] if ref_token is None else ref_token
         if len(self.ref_token) != 2:
             raise ValueError("ref_token must contain exactly two strings")
-        if grounding_format not in {"bentxt", "qwen3_json", "qwen3_tokens"}:
-            raise ValueError(
-                "grounding_format must be one of: bentxt, qwen3_json, qwen3_tokens"
-            )
+        if grounding_format not in {"bentxt", "qwen3_json"}:
+            raise ValueError("grounding_format must be one of: bentxt, qwen3_json")
         self.grounding_format = grounding_format
 
     def __len__(self):
@@ -760,8 +757,8 @@ class BENTxTDataModule(pl.LightningDataModule):
             point_token: Optional tuple of [start_token, end_token] to wrap <point> tags in text.
             ref_token: Optional tuple of [start_token, end_token] to wrap <ref> tags in text.
             grounding_format: Model-facing grounding serialization. Use
-                ``qwen3_tokens`` for Qwen3-VL's dedicated reference/box tokens
-                and 0-1000 grounding grid.
+                ``qwen3_json`` for Qwen3-VL's documented JSON interface and
+                0-1000 grounding grid.
             use_location_redacted_captions: Replace captioning targets with
                 location-redacted captions while leaving all other task targets
                 unchanged.

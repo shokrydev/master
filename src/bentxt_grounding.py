@@ -7,7 +7,7 @@ import math
 import re
 from typing import Literal
 
-GroundingFormat = Literal["bentxt", "qwen3_json", "qwen3_tokens"]
+GroundingFormat = Literal["bentxt", "qwen3_json"]
 BBox = tuple[float, float, float, float]
 
 QWEN_OBJECT_REF_TOKENS = (
@@ -57,7 +57,7 @@ def bentxt_bbox_to_qwen3_json(text: str) -> str:
     bbox = parse_bentxt_bbox(text)
     if bbox is None:
         raise ValueError(f"Invalid BigEarthNet.txt bounding-box target: {text!r}")
-    payload = {"bbox_2d": [_qwen_coordinate(value) for value in bbox]}
+    payload = [{"bbox_2d": [_qwen_coordinate(value) for value in bbox]}]
     return json.dumps(payload, separators=(",", ":"))
 
 
@@ -84,8 +84,6 @@ def format_grounding_target(
         return str(text)
     if grounding_format == "qwen3_json":
         return bentxt_bbox_to_qwen3_json(text)
-    if grounding_format == "qwen3_tokens":
-        return bentxt_bbox_to_qwen3_tokens(text)
     raise ValueError(f"Unsupported grounding format: {grounding_format}")
 
 
@@ -98,14 +96,15 @@ def format_grounding_prompt(
 ) -> str:
     """Adapt BEN.txt reference/point markup to the configured model contract."""
     formatted = str(text)
-    if grounding_format in {"qwen3_json", "qwen3_tokens"}:
+    if grounding_format == "qwen3_json":
         # Both datasets use image coordinates with a top-left origin. Qwen3-VL
         # changes only the scale: normalized BEN.txt values become integers on
         # a 1000 x 1000 reference grid.
         def replace_point(match: re.Match[str]) -> str:
             x = _qwen_coordinate(float(match.group(1)))
             y = _qwen_coordinate(float(match.group(2)))
-            return f"{point_token[0]}({x}, {y}){point_token[1]}"
+            point = json.dumps({"point_2d": [x, y]}, separators=(",", ":"))
+            return f"{point_token[0]}{point}{point_token[1]}"
 
         formatted = _BEN_POINT_TAG_RE.sub(replace_point, formatted)
     else:
@@ -113,9 +112,10 @@ def format_grounding_prompt(
             "</point>", point_token[1]
         )
 
-    return formatted.replace("<ref>", ref_token[0]).replace(
+    formatted = formatted.replace("<ref>", ref_token[0]).replace(
         "</ref>", ref_token[1]
     )
+    return formatted
 
 
 def _strip_qwen_box_tokens(text: str) -> str:

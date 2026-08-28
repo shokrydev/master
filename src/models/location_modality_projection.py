@@ -13,7 +13,7 @@ class LocationModalityProjection(nn.Module):
 
     Args:
         satclip_dim: SatCLIP embedding dimension (256 for all variants)
-        hidden_size: VLM hidden dimension (2048/2560/3584 for Qwen3-VL 2B/4B/8B)
+        hidden_size: VLM hidden dimension inferred from the loaded text model
         num_tokens: Number of location tokens to produce
         architecture: ``mlp`` (original) or ``linear`` (compact ablation)
     """

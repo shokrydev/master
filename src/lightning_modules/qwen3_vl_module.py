@@ -379,6 +379,7 @@ class Qwen3VLModule(L.LightningModule):
         self._location_encoding_state = None
         self._non_rgb_insertion_state = None
         self._location_encoding_norm_logged = False
+        self._supervision_mask_validated = False
 
         self._prediction_export_count = 0
 
@@ -429,7 +430,6 @@ class Qwen3VLModule(L.LightningModule):
             load_in_4bit=True,
             use_gradient_checkpointing="unsloth",
         )
-
         if self.adapter_dir is None:
             # These are Qwen's internal module names for the modality projection.
             # Keep the names unchanged so PEFT/Unsloth can find the pretrained modules.
@@ -455,7 +455,13 @@ class Qwen3VLModule(L.LightningModule):
         FastVisionModel.for_training(self.model)
 
         # Wrap collator with GeoAwareCollator
-        base_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
+        base_collator = UnslothVisionDataCollator(
+            self.model,
+            self.tokenizer,
+            train_on_responses_only=True,
+            instruction_part="<|im_start|>user\n",
+            response_part="<|im_start|>assistant\n",
+        )
         location_prompt_template = None
         if self.loc_mode == "loc_text":
             location_prompt_template = self.location_text_template
@@ -1278,7 +1284,85 @@ class Qwen3VLModule(L.LightningModule):
                         f"input_ids length {sequence_length} after projected-token insertion"
                     )
 
+        self._validate_supervision_mask(
+            batch,
+            insert_positions=insert_positions,
+            num_inserted_tokens=num_inserted_tokens,
+        )
+
         return batch, target_texts, lat, lon, non_rgb_imagery, sample_metadata
+
+    @staticmethod
+    def _find_token_subsequence(sequence: list[int], subsequence: list[int]) -> int | None:
+        if not subsequence:
+            return None
+        limit = len(sequence) - len(subsequence) + 1
+        for index in range(max(limit, 0)):
+            if sequence[index : index + len(subsequence)] == subsequence:
+                return index
+        return None
+
+    def _validate_supervision_mask(
+        self,
+        batch: dict[str, Any],
+        *,
+        insert_positions: torch.Tensor | None,
+        num_inserted_tokens: int,
+    ) -> None:
+        """Validate assistant-only supervision and masked multimodal token positions once."""
+        if (
+            not hasattr(self, "_supervision_mask_validated")
+            or self._supervision_mask_validated
+            or "labels" not in batch
+        ):
+            return
+        input_ids = batch["input_ids"]
+        labels = batch["labels"]
+        if input_ids.shape != labels.shape:
+            raise ValueError("labels must align with input_ids")
+        if not labels.ne(-100).any(dim=1).all():
+            raise ValueError("Every supervised sample must expose assistant answer tokens to loss")
+
+        attention_mask = batch.get("attention_mask")
+        if attention_mask is not None and labels[attention_mask.eq(0)].ne(-100).any():
+            raise ValueError("Padding tokens must be ignored by the training loss")
+
+        tokenizer = getattr(self.tokenizer, "tokenizer", self.tokenizer)
+        assistant_marker_ids = tokenizer.encode(
+            "<|im_start|>assistant\n",
+            add_special_tokens=False,
+        )
+        for row_index in range(input_ids.shape[0]):
+            row_ids = input_ids[row_index].tolist()
+            marker_index = self._find_token_subsequence(row_ids, assistant_marker_ids)
+            if marker_index is None:
+                raise ValueError("Could not find Qwen assistant header in supervised input")
+            response_start = marker_index + len(assistant_marker_ids)
+            if labels[row_index, :response_start].ne(-100).any():
+                raise ValueError(
+                    "Assistant-only loss requires system, user, RGB and side-token "
+                    "positions before the response to use label -100"
+                )
+
+        if num_inserted_tokens > 0:
+            if insert_positions is None:
+                raise ValueError("Projected token insertion positions are missing")
+            for row_index, position in enumerate(insert_positions.tolist()):
+                inserted_labels = labels[
+                    row_index,
+                    position : position + num_inserted_tokens,
+                ]
+                if inserted_labels.ne(-100).any():
+                    raise ValueError("Projected S1/S2/location tokens must be ignored by loss")
+
+        supervised_count = int(labels.ne(-100).sum())
+        ignored_count = int(labels.eq(-100).sum())
+        self._print(
+            "Verified assistant-only loss mask on the first supervised batch: "
+            f"supervised_answer_tokens={supervised_count}, "
+            f"ignored_prompt_or_multimodal_tokens={ignored_count}."
+        )
+        self._supervision_mask_validated = True
 
     def _reset_decoder_conditioning_state(self) -> None:
         self._location_insertion_state = None
@@ -1327,8 +1411,25 @@ class Qwen3VLModule(L.LightningModule):
             )
         return outputs.loss
 
+    def _generation_stop_token_ids(self) -> set[int]:
+        """Return terminal generation IDs that are not assistant response content."""
+        token_ids: set[int] = set()
+        generation_config = getattr(self.model, "generation_config", None)
+        eos_ids = getattr(generation_config, "eos_token_id", None)
+        if isinstance(eos_ids, int):
+            token_ids.add(eos_ids)
+        elif eos_ids is not None:
+            token_ids.update(int(token_id) for token_id in eos_ids)
+        for token_id in (
+            getattr(self.tokenizer, "eos_token_id", None),
+            getattr(self.tokenizer, "pad_token_id", None),
+        ):
+            if token_id is not None:
+                token_ids.add(int(token_id))
+        return token_ids
+
     def _generate_for_batch(self, batch: dict[str, Any]) -> list[str]:
-        """Run greedy generation on a batch and return decoded predictions."""
+        """Run greedy generation and decode the assistant response without stripping content tokens."""
         gen_batch = {k: v for k, v in batch.items() if k != "labels"}
         was_training = self.model.training
         FastVisionModel.for_inference(self.model)
@@ -1344,11 +1445,13 @@ class Qwen3VLModule(L.LightningModule):
             FastVisionModel.for_training(self.model)
             self.model.train(was_training)
         input_len = gen_batch["input_ids"].shape[-1]
+        stop_token_ids = self._generation_stop_token_ids()
         predictions = []
         for i in range(generated_ids.shape[0]):
-            text = self.tokenizer.decode(
-                generated_ids[i, input_len:], skip_special_tokens=True
-            )
+            response_ids = generated_ids[i, input_len:].tolist()
+            while response_ids and response_ids[-1] in stop_token_ids:
+                response_ids.pop()
+            text = self.tokenizer.decode(response_ids, skip_special_tokens=False)
             predictions.append(text)
         return predictions
 

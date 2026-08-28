@@ -100,7 +100,7 @@ class TestGeoAwareCollator(unittest.TestCase):
                     "input_text": "Locate the referenced region.",
                     "target_texts": ["[0.64 0.0, 1.0 0.71]"],
                     "model_target_texts": [
-                        "<|box_start|>(640,0),(1000,710)<|box_end|>"
+                        '[{"bbox_2d":[640,0,1000,710]}]'
                     ],
                     "lat": 10.5,
                     "lon": 20.5,
@@ -111,7 +111,7 @@ class TestGeoAwareCollator(unittest.TestCase):
         assistant_text = captured["cleaned"][0]["messages"][-1]["content"][0]["text"]
         self.assertEqual(
             assistant_text,
-            "<|box_start|>(640,0),(1000,710)<|box_end|>",
+            '[{"bbox_2d":[640,0,1000,710]}]',
         )
         self.assertEqual(batch["target_texts"], [["[0.64 0.0, 1.0 0.71]"]])
 
