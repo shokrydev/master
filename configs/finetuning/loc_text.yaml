@@ -4,4 +4,4 @@ model:
   init_args:
     loc_mode: loc_text
     location_text_template: "Scene coordinates: {location}."
-    coordinates_decimal_places: 2
+    coordinates_decimal_places: 0

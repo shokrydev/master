@@ -94,7 +94,7 @@ done
 
 for EXTRA_ARG in "${EXTRA_ARGS[@]}"; do
     case "$EXTRA_ARG" in
-        configs/finetuning/ablations/loc_text_integer.yaml)
+        configs/finetuning/ablations/loc_text_*.yaml)
             if [ "$CONDITION" != "loc_text" ]; then
                 echo "$EXTRA_ARG requires --condition loc_text."
                 exit 1
@@ -191,19 +191,8 @@ REQUIRED_ENV_VARS=(
     FINETUNING_OUTPUT_ROOT
     HF_HOME
 )
-USES_SATCLIP_L40=false
-for EXTRA_ARG in "${EXTRA_ARGS[@]}"; do
-    if [ "$EXTRA_ARG" = "configs/finetuning/ablations/loc_embed_satclip_l40.yaml" ]; then
-        USES_SATCLIP_L40=true
-        break
-    fi
-done
 if [ "$CONDITION" = "loc_embed" ]; then
-    if [ "$USES_SATCLIP_L40" = true ]; then
-        REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
-    else
-        REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
-    fi
+    REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
 fi
 if [ "$CONDITION" = "loc_additive_satclip" ]; then
     REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)

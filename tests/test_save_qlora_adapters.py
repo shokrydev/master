@@ -1,4 +1,5 @@
 import importlib
+import json
 import sys
 import tempfile
 import types
@@ -131,6 +132,39 @@ class SaveQLoRAAdaptersCallbackTest(unittest.TestCase):
             self.assertTrue((Path(tmpdir) / "tokenizer.json").exists())
             for filename in stale_paths:
                 self.assertFalse(Path(tmpdir, filename).exists())
+
+    def test_saves_each_configured_training_milestone_once(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            callback = SaveQLoRAAdaptersCallback(
+                dirpath=f"{tmpdir}/final",
+                milestone_dirpath=f"{tmpdir}/steps",
+                milestone_steps=[500, 100, 100],
+            )
+            trainer = types.SimpleNamespace(global_step=100)
+            pl_module = types.SimpleNamespace(
+                model=_FakeModel(),
+                tokenizer=_FakeTokenizer(),
+                location_modality_projection=None,
+                non_rgb_modality_projection=None,
+                scene_location_encoding=None,
+                additive_location_projection=None,
+                print=lambda *args, **kwargs: None,
+            )
+
+            callback.on_train_batch_end(trainer, pl_module, None, None, 0)
+            callback.on_train_batch_end(trainer, pl_module, None, None, 1)
+
+            step_dir = Path(tmpdir) / "steps" / "step_000100"
+            self.assertTrue((step_dir / "adapter_model.safetensors").exists())
+            self.assertEqual(
+                json.loads((step_dir / "training_step.json").read_text()),
+                {"optimizer_step": 100},
+            )
+            self.assertEqual(callback._saved_milestone_steps, {100})
+
+    def test_milestones_require_an_output_directory(self):
+        with self.assertRaisesRegex(ValueError, "milestone_dirpath"):
+            SaveQLoRAAdaptersCallback(dirpath="final", milestone_steps=[100])
 
 
 if __name__ == "__main__":

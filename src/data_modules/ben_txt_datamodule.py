@@ -276,10 +276,44 @@ def _apply_coordinate_perturbation(
 
     perturbed = metadata.copy()
     if perturbation == "shuffled":
+        _require_columns(
+            perturbed,
+            {"patch_id", "latitude", "longitude"},
+            path="in-memory metadata",
+            label="coordinate perturbation input",
+        )
+        coordinate_counts = perturbed.groupby("patch_id", sort=False)[
+            ["latitude", "longitude"]
+        ].nunique(dropna=False)
+        inconsistent = coordinate_counts.gt(1).any(axis=1)
+        if inconsistent.any():
+            examples = coordinate_counts.index[inconsistent].astype(str).tolist()[:5]
+            raise ValueError(
+                "Each patch_id must have one coordinate pair before shuffling; "
+                f"inconsistent examples: {examples}"
+            )
+        patch_coordinates = perturbed[
+            ["patch_id", "latitude", "longitude"]
+        ].drop_duplicates("patch_id", keep="first")
+        if len(patch_coordinates) < 2:
+            raise ValueError("Shuffled coordinates require at least two unique patches")
+
         rng = np.random.RandomState(42)
-        permutation = rng.permutation(len(perturbed))
-        perturbed["latitude"] = perturbed["latitude"].to_numpy()[permutation]
-        perturbed["longitude"] = perturbed["longitude"].to_numpy()[permutation]
+        cycle = rng.permutation(len(patch_coordinates))
+        donors = np.roll(cycle, -1)
+        patch_ids = patch_coordinates["patch_id"].to_numpy()
+        latitudes = patch_coordinates["latitude"].to_numpy()
+        longitudes = patch_coordinates["longitude"].to_numpy()
+        donor_coordinates = {
+            patch_ids[source]: (latitudes[donor], longitudes[donor])
+            for source, donor in zip(cycle, donors, strict=True)
+        }
+        perturbed["latitude"] = perturbed["patch_id"].map(
+            lambda patch_id: donor_coordinates[patch_id][0]
+        )
+        perturbed["longitude"] = perturbed["patch_id"].map(
+            lambda patch_id: donor_coordinates[patch_id][1]
+        )
     else:
         perturbed["latitude"] = -perturbed["latitude"]
         longitude = perturbed["longitude"].to_numpy()
@@ -722,6 +756,7 @@ class BENTxTDataModule(pl.LightningDataModule):
             use_location_redacted_captions: bool = False,
             location_redacted_caption_file: str | Path | None = None,
             coordinate_perturbation: CoordinatePerturbation | None = None,
+            training_shuffle_seed: int = 42,
             validation_subset_size: int | None = None,
             validation_subset_seed: int = 42,
             test_splits: Iterable[str] = ("test",),
@@ -767,6 +802,9 @@ class BENTxTDataModule(pl.LightningDataModule):
                 use_location_redacted_captions is true.
             coordinate_perturbation: Optional counterfactual coordinate mode
                 for evaluation. Does not alter imagery or target text.
+            training_shuffle_seed: Seed for the training DataLoader's private
+                random generator. This keeps the shuffled row order independent
+                of random numbers consumed while constructing a model condition.
             validation_subset_size: Optional fixed-size random subset used by
                 validation monitoring. The same seed selects the same rows.
             validation_subset_seed: Seed for the fixed validation subset.
@@ -780,7 +818,6 @@ class BENTxTDataModule(pl.LightningDataModule):
             raise ValueError("batch_size must be a positive integer")
         if validation_subset_size is not None and validation_subset_size <= 0:
             raise ValueError("validation_subset_size must be positive when set")
-
         test_splits = tuple(test_splits)
         valid_splits = {"train", "validation", "test", "bench"}
         invalid_test_splits = sorted(set(test_splits) - valid_splits)
@@ -793,6 +830,7 @@ class BENTxTDataModule(pl.LightningDataModule):
         self.num_workers_dataloader = num_workers_dataloader
         self.batch_size = batch_size
         self.pin_memory = torch.cuda.is_available()
+        self.training_shuffle_seed = training_shuffle_seed
         self.validation_subset_size = validation_subset_size
         self.validation_subset_seed = validation_subset_seed
         self.test_splits = test_splits
@@ -892,7 +930,6 @@ class BENTxTDataModule(pl.LightningDataModule):
                 splits=self.test_splits,
                 transform=self.eval_transforms
             )
-
     def _create_dataloader(
         self,
         dataset,
@@ -903,11 +940,16 @@ class BENTxTDataModule(pl.LightningDataModule):
         if dataset is None:
             raise RuntimeError("Dataset is not initialized; call setup for this stage first")
         collate_fn = collator or self._collator or collate_normalized
+        generator = None
+        if shuffle:
+            generator = torch.Generator()
+            generator.manual_seed(self.training_shuffle_seed)
         return DataLoader(
             dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers_dataloader,
             shuffle=shuffle,
+            generator=generator,
             pin_memory=self.pin_memory,
             collate_fn=collate_fn,
         )

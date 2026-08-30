@@ -109,6 +109,29 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+for EXTRA_ARG in "${EXTRA_ARGS[@]}"; do
+    case "$EXTRA_ARG" in
+        configs/finetuning/ablations/loc_text_*.yaml)
+            if [ "$CONDITION" != "loc_text" ]; then
+                echo "$EXTRA_ARG requires --condition loc_text."
+                exit 1
+            fi
+            ;;
+        configs/finetuning/ablations/loc_embed_*.yaml)
+            if [ "$CONDITION" != "loc_embed" ]; then
+                echo "$EXTRA_ARG requires --condition loc_embed."
+                exit 1
+            fi
+            ;;
+        configs/finetuning/ablations/loc_encoding_*.yaml)
+            if [ "$CONDITION" != "loc_encoding" ]; then
+                echo "$EXTRA_ARG requires --condition loc_encoding."
+                exit 1
+            fi
+            ;;
+    esac
+done
+
 if [ -z "$SIZE" ]; then
     echo "Missing --size. Use 2B, 4B or 8B."
     exit 1
@@ -186,7 +209,6 @@ if [ -z "$PARTITION" ]; then
     echo "Missing Slurm partition. Set SLURM_DEFAULT_PARTITION in .env or pass --partition."
     exit 1
 fi
-
 REQUIRED_ENV_VARS=(
     BIGEARTHNET_V2_LMDB_ROOT
     BIGEARTHNET_TXT_PARQUET_PATH
@@ -194,19 +216,8 @@ REQUIRED_ENV_VARS=(
     EVALUATION_OUTPUT_ROOT
     HF_HOME
 )
-USES_SATCLIP_L40=false
-for EXTRA_ARG in "${EXTRA_ARGS[@]}"; do
-    if [ "$EXTRA_ARG" = "configs/finetuning/ablations/loc_embed_satclip_l40.yaml" ]; then
-        USES_SATCLIP_L40=true
-        break
-    fi
-done
 if [ "$CONDITION" = "loc_embed" ]; then
-    if [ "$USES_SATCLIP_L40" = true ]; then
-        REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
-    else
-        REQUIRED_ENV_VARS+=(SATCLIP_CHECKPOINT_PATH)
-    fi
+    REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
 fi
 if [ "$CONDITION" = "loc_additive_satclip" ]; then
     REQUIRED_ENV_VARS+=(SATCLIP_L40_CHECKPOINT_PATH)
@@ -230,6 +241,7 @@ echo "Size: $SIZE"
 echo "Model: $MODEL_NAME"
 echo "Adapter dir: $ADAPTER_DIR"
 echo "Coordinate perturbation: ${COORDINATE_PERTURBATION:-<none>}"
+echo "Evaluation population: complete bench split"
 echo "Run label: $RUN_LABEL"
 echo "Job name: $JOB_NAME"
 echo "Slurm partition: $PARTITION"

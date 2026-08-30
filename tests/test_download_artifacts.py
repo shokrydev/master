@@ -17,13 +17,13 @@ def _args(**overrides):
 
 
 class DownloadArtifactSelectionTest(unittest.TestCase):
-    def test_default_keeps_original_smoke_artifact_selection(self):
-        self.assertEqual(selected_artifacts(_args()), (["2B"], ["l10"], True))
+    def test_default_downloads_selected_smoke_artifacts(self):
+        self.assertEqual(selected_artifacts(_args()), (["2B"], ["l40"], True))
 
-    def test_all_keeps_l40_as_an_explicit_ablation_download(self):
+    def test_all_downloads_both_satclip_variants(self):
         self.assertEqual(
             selected_artifacts(_args(all=True)),
-            (["2B", "4B", "8B"], ["l10"], True),
+            (["2B", "4B", "8B"], ["l10", "l40"], True),
         )
 
     def test_l40_can_be_selected_without_l10_or_other_artifacts(self):

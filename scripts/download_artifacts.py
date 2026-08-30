@@ -7,7 +7,7 @@ by the dataset's Hugging Face instructions.
 
 Default behavior downloads the first smoke-run artifacts:
     - Qwen3-VL 2B 4-bit
-    - SatCLIP ViT16-L10 checkpoint
+    - SatCLIP ViT16-L40 checkpoint used by the selected location conditions
     - BigEarthNet MobileViT S1/S2 encoder
 
 Use `--all` to prefetch all Qwen sizes.
@@ -149,7 +149,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Download all Qwen sizes plus SatCLIP and BigEarthNet encoder.",
+        help="Download all Qwen sizes, both SatCLIP variants and the BigEarthNet encoder.",
     )
     parser.add_argument(
         "--qwen",
@@ -166,7 +166,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--satclip-l40",
         action="store_true",
-        help="Download the SatCLIP ViT16-L40 checkpoint for the L=40 ablation.",
+        help="Download the selected SatCLIP ViT16-L40 checkpoint.",
     )
     parser.add_argument(
         "--bigearthnet-encoder",
@@ -183,7 +183,7 @@ def parse_args() -> argparse.Namespace:
 
 def selected_artifacts(args: argparse.Namespace) -> tuple[list[str], list[str], bool]:
     if args.all:
-        return sorted(QWEN_REPOS), ["l10"], True
+        return sorted(QWEN_REPOS), ["l10", "l40"], True
 
     has_explicit_selection = (
         args.qwen is not None
@@ -192,7 +192,7 @@ def selected_artifacts(args: argparse.Namespace) -> tuple[list[str], list[str], 
         or args.bigearthnet_encoder
     )
     if not has_explicit_selection:
-        return ["2B"], ["l10"], True
+        return ["2B"], ["l40"], True
 
     qwen_sizes: list[str] = []
     if args.qwen is not None:

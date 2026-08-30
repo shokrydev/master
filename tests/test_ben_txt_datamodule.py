@@ -43,6 +43,29 @@ class TestBENTxTDataBoundary(unittest.TestCase):
                 test_splits=("unknown",),
             )
 
+    def test_training_shuffle_is_isolated_from_global_rng_state(self) -> None:
+        def shuffled_order(seed: int) -> list[int]:
+            datamodule = BENTxTDataModule(
+                image_lmdb_file="images.lmdb",
+                metadata_file="metadata.parquet",
+                batch_size=4,
+                num_workers_dataloader=0,
+                training_shuffle_seed=seed,
+            )
+            datamodule.train_ds = list(range(24))
+            datamodule.set_collator(lambda rows: rows)
+            return [row for batch in datamodule.train_dataloader() for row in batch]
+
+        torch.manual_seed(1)
+        first = shuffled_order(42)
+        torch.rand(1000)
+        second = shuffled_order(42)
+        different_seed = shuffled_order(43)
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, different_seed)
+        self.assertCountEqual(first, range(24))
+
     def test_location_redacted_caption_file_loads_patch_mapping(self) -> None:
         with TemporaryDirectory() as tmpdir:
             path = f"{tmpdir}/captions.parquet"
@@ -155,6 +178,7 @@ class TestBENTxTDataBoundary(unittest.TestCase):
         metadata = pd.DataFrame(
             {
                 "ID": ["row-a", "row-b", "row-c"],
+                "patch_id": ["patch-a", "patch-b", "patch-c"],
                 "latitude": [10.0, 20.0, 30.0],
                 "longitude": [1.0, 2.0, 3.0],
             }
@@ -168,10 +192,34 @@ class TestBENTxTDataBoundary(unittest.TestCase):
         self.assertCountEqual(shuffled["latitude"].tolist(), [10.0, 20.0, 30.0])
         self.assertCountEqual(shuffled["longitude"].tolist(), [1.0, 2.0, 3.0])
 
+    def test_coordinate_shuffle_is_patch_consistent_and_has_no_fixed_patch(self) -> None:
+        metadata = pd.DataFrame(
+            {
+                "ID": ["a-1", "a-2", "b-1", "c-1"],
+                "patch_id": ["patch-a", "patch-a", "patch-b", "patch-c"],
+                "latitude": [10.0, 10.0, 20.0, 30.0],
+                "longitude": [1.0, 1.0, 2.0, 3.0],
+            }
+        )
+
+        shuffled = _apply_coordinate_perturbation(metadata, "shuffled")
+
+        patch_a = shuffled[shuffled["patch_id"].eq("patch-a")]
+        self.assertEqual(patch_a["latitude"].nunique(), 1)
+        self.assertEqual(patch_a["longitude"].nunique(), 1)
+        original = metadata.drop_duplicates("patch_id").set_index("patch_id")
+        changed = shuffled.drop_duplicates("patch_id").set_index("patch_id")
+        for patch_id in original.index:
+            self.assertNotEqual(
+                (original.at[patch_id, "latitude"], original.at[patch_id, "longitude"]),
+                (changed.at[patch_id, "latitude"], changed.at[patch_id, "longitude"]),
+            )
+
     def test_antipodal_coordinate_perturbation_changes_only_coordinates(self) -> None:
         metadata = pd.DataFrame(
             {
                 "ID": ["row-a", "row-b"],
+                "patch_id": ["patch-a", "patch-b"],
                 "latitude": [10.0, -20.0],
                 "longitude": [30.0, -40.0],
             }

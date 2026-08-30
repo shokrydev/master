@@ -3,8 +3,8 @@
 # BigEarthNet.txt is the core dataset for the geolocation experiments with
 # multispectral/SAR imagery. The default condition is no explicit location with
 # enabled non-RGB conditioning; compose loc_text.yaml, loc_embed.yaml or the
-# post-core loc_encoding.yaml or loc_additive_satclip.yaml development
-# overrides for location-conditioned runs.
+# loc_additive_satclip.yaml core override or post-core loc_encoding.yaml
+# development override for location-conditioned runs.
 
 seed_everything: 42
 
@@ -47,6 +47,8 @@ trainer:
       init_args:
         dirpath: ${paths.adapter_dir}
         best_dirpath: ${paths.output_dir}/qlora_adapter_best_val
+        milestone_dirpath: ${paths.output_dir}/qlora_adapter_steps
+        milestone_steps: [10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000]
         monitor: val/loss
         mode: min
 
@@ -108,5 +110,8 @@ data:
     grounding_format: qwen3_json
     use_location_redacted_captions: false
     location_redacted_caption_file: null
+    # Isolate row shuffling from condition-specific model initialization RNG
+    # while giving each declared experiment seed its own order.
+    training_shuffle_seed: ${seed_everything}
     batch_size: 128
     num_workers_dataloader: 12

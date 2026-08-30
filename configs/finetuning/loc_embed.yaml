@@ -1,7 +1,7 @@
 # Override for the loc_embed condition.
 
 paths:
-  satclip_checkpoint_path: ${oc.env:SATCLIP_CHECKPOINT_PATH,data/satclip/satclip-vit16-l10.ckpt}
+  satclip_checkpoint_path: ${oc.env:SATCLIP_L40_CHECKPOINT_PATH,data/satclip/satclip-vit16-l40.ckpt}
 
 model:
   init_args:

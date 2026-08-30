@@ -12,12 +12,23 @@ class SaveQLoRAAdaptersCallback(Callback):
         self,
         dirpath: str,
         best_dirpath: str | None = None,
+        milestone_dirpath: str | None = None,
+        milestone_steps: list[int] | None = None,
         monitor: str = "val/loss",
         mode: str = "min",
     ) -> None:
         super().__init__()
         self.dirpath = Path(dirpath)
         self.best_dirpath = Path(best_dirpath) if best_dirpath is not None else None
+        self.milestone_dirpath = (
+            Path(milestone_dirpath) if milestone_dirpath is not None else None
+        )
+        self.milestone_steps = tuple(sorted(set(milestone_steps or [])))
+        if any(step <= 0 for step in self.milestone_steps):
+            raise ValueError("milestone_steps must contain only positive integers")
+        if self.milestone_steps and self.milestone_dirpath is None:
+            raise ValueError("milestone_dirpath is required when milestone_steps are set")
+        self._saved_milestone_steps: set[int] = set()
         self.monitor = monitor
         self.mode = mode
         if self.mode not in {"min", "max"}:
@@ -117,6 +128,29 @@ class SaveQLoRAAdaptersCallback(Callback):
                 additive_manifest_path.unlink()
 
         pl_module.print(f"Saved QLoRA adapter bundle to {dirpath}")
+
+    def on_train_batch_end(
+        self,
+        trainer: L.Trainer,
+        pl_module: L.LightningModule,
+        outputs,
+        batch,
+        batch_idx: int,
+    ) -> None:
+        completed_steps = int(trainer.global_step)
+        if (
+            completed_steps not in self.milestone_steps
+            or completed_steps in self._saved_milestone_steps
+        ):
+            return
+        assert self.milestone_dirpath is not None
+        step_dirpath = self.milestone_dirpath / f"step_{completed_steps:06d}"
+        self._save_adapters(pl_module, step_dirpath)
+        (step_dirpath / "training_step.json").write_text(
+            json.dumps({"optimizer_step": completed_steps}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self._saved_milestone_steps.add(completed_steps)
 
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         if self.best_dirpath is None:

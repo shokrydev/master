@@ -365,7 +365,7 @@ def main_single(args: argparse.Namespace) -> dict[str, Any]:
     satclip_checkpoint = (
         require_env(
             "SATCLIP_L40_CHECKPOINT_PATH"
-            if args.condition == "loc_additive_satclip"
+            if args.condition in {"loc_embed", "loc_additive_satclip"}
             else "SATCLIP_CHECKPOINT_PATH"
         )
         if args.condition in {"loc_embed", "loc_additive_satclip"}
