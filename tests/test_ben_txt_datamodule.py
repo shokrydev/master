@@ -5,6 +5,11 @@ import pandas as pd
 import torch
 from PIL import Image
 
+from src.bentxt_generation import (
+    BOUNDING_BOX_BUCKET,
+    CAPTION_BUCKET,
+    SHORT_ANSWER_BUCKET,
+)
 from src.data_modules.ben_txt_datamodule import (
     BENTxTDataModule,
     _apply_coordinate_perturbation,
@@ -65,6 +70,53 @@ class TestBENTxTDataBoundary(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotEqual(first, different_seed)
         self.assertCountEqual(first, range(24))
+
+    def test_task_aware_test_loaders_cover_each_row_once(self) -> None:
+        task_types = ["binary", "bounding box", "captioning", "mcq", "binary"]
+
+        class FakeBENTxTDataset:
+            def __init__(self):
+                self.text_data = pd.DataFrame({"type": task_types})
+
+            def __len__(self):
+                return len(task_types)
+
+            def __getitem__(self, index):
+                return {"index": index, "task_type": task_types[index]}
+
+        datamodule = BENTxTDataModule(
+            image_lmdb_file="images.lmdb",
+            metadata_file="metadata.parquet",
+            evaluation_batch_sizes={
+                SHORT_ANSWER_BUCKET: 2,
+                BOUNDING_BOX_BUCKET: 1,
+                CAPTION_BUCKET: 1,
+            },
+            evaluation_num_workers_by_bucket={
+                SHORT_ANSWER_BUCKET: 0,
+                BOUNDING_BOX_BUCKET: 0,
+                CAPTION_BUCKET: 0,
+            },
+        )
+        datamodule.test_ds = FakeBENTxTDataset()
+        datamodule.set_test_collator(lambda rows: rows)
+
+        loaders = datamodule.test_dataloader()
+        batches = [batch for loader in loaders for batch in loader]
+        flattened = [row for batch in batches for row in batch]
+
+        self.assertCountEqual(
+            (row["index"] for row in flattened),
+            range(len(task_types)),
+        )
+        self.assertEqual(len(flattened), len({row["index"] for row in flattened}))
+        for batch in batches:
+            bucket_types = {row["task_type"] for row in batch}
+            self.assertTrue(
+                bucket_types <= {"binary", "mcq"}
+                or bucket_types == {"bounding box"}
+                or bucket_types == {"captioning"}
+            )
 
     def test_location_redacted_caption_file_loads_patch_mapping(self) -> None:
         with TemporaryDirectory() as tmpdir:

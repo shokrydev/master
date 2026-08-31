@@ -20,8 +20,13 @@ model:
   init_args:
     adapter_dir: ${paths.adapter_dir}
     prediction_export_path: ${paths.output_dir}/predictions.jsonl
-    # Generation stops at EOS; this cap accommodates the longer BEN.txt captions.
+    # Fallback cap plus task-aware caps verified against complete bench targets
+    # and all locally archived prediction exports.
     max_new_tokens: 512
+    generation_max_new_tokens_by_bucket:
+      short_answer: 32
+      bounding_box: 64
+      captioning: 512
     non_rgb_conditioning: enabled
     non_rgb_encoder_dir: ${paths.bigearthnet_encoder_dir}
     non_rgb_encoder_feature_dim: null
@@ -44,5 +49,15 @@ data:
     location_redacted_caption_file: null
     coordinate_perturbation: null
     test_splits: [bench]
+    # Safe bootstrap values. Replace all three with the profiler's locked 2B
+    # recommendations before submitting the dependent evaluation matrix.
+    evaluation_batch_sizes:
+      short_answer: 1
+      bounding_box: 1
+      captioning: 1
+    evaluation_num_workers_by_bucket:
+      short_answer: 4
+      bounding_box: 4
+      captioning: 4
     batch_size: 1
     num_workers_dataloader: 4

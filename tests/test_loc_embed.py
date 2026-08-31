@@ -179,6 +179,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
             module.run_label = "loc_embed-2B-full"
             module.model_size = "2B"
             module._prediction_export_count = 0
+            module._prediction_export_sample_ids = set()
 
             module._write_prediction_export(
                 predictions=["yes", "no"],
@@ -215,6 +216,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
         module = object.__new__(Qwen3VLModule)
         module.prediction_export_path = "predictions.jsonl"
         module.max_new_tokens = 32
+        module.generation_max_new_tokens_by_bucket = None
         module._prepare_model_inputs = lambda batch: (
             {"input_ids": torch.tensor([[1, 2, 3]])},
             [["reference"]],
@@ -223,7 +225,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
             {},
             {"sample_id": ["row-a"]},
         )
-        module._generate_for_batch = lambda batch: ["generated answer"]
+        module._generate_for_batch = lambda batch, **kwargs: ["generated answer"]
         module._print = lambda *args, **kwargs: None
         module._reset_decoder_conditioning_state = lambda: None
         exported = {}
@@ -234,6 +236,45 @@ class InsertTokenHelpersTest(unittest.TestCase):
         self.assertEqual(result, {"generated": "generated answer"})
         self.assertEqual(exported["predictions"], ["generated answer"])
         self.assertEqual(exported["target_texts"], [["reference"]])
+
+    def test_task_aware_generation_resolves_bucket_cap(self):
+        module = object.__new__(Qwen3VLModule)
+        module.max_new_tokens = 512
+        module.generation_max_new_tokens_by_bucket = {
+            "short_answer": 32,
+            "bounding_box": 64,
+            "captioning": 512,
+        }
+
+        self.assertEqual(
+            module._test_generation_settings(["binary", "mcq"]),
+            ("short_answer", 32),
+        )
+        with self.assertRaisesRegex(ValueError, "mixed bucket"):
+            module._test_generation_settings(["binary", "captioning"])
+
+    def test_prediction_export_rejects_duplicate_sample_ids(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module = object.__new__(Qwen3VLModule)
+            module.prediction_export_path = str(Path(tmpdir) / "predictions.jsonl")
+            module.loc_mode = "no_loc"
+            module.model_name_or_path = "qwen-test"
+            module.adapter_dir = "/tmp/adapter"
+            module.run_label = None
+            module.model_size = None
+            module._prediction_export_count = 0
+            module._prediction_export_sample_ids = set()
+            kwargs = {
+                "predictions": ["yes"],
+                "target_texts": [["yes"]],
+                "lat": None,
+                "lon": None,
+                "sample_metadata": {"sample_id": ["row-a"]},
+            }
+
+            module._write_prediction_export(**kwargs)
+            with self.assertRaisesRegex(RuntimeError, "Duplicate sample_id"):
+                module._write_prediction_export(**kwargs)
 
     def test_validation_generation_uses_separate_prompt_only_batch(self):
         module = object.__new__(Qwen3VLModule)

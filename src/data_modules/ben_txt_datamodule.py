@@ -4,7 +4,7 @@ Upstream source:
 https://huggingface.co/datasets/BIFOLD-BigEarthNetv2-0/BigEarthNet.txt/blob/main/ben_txt_datamodule.py
 """
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +17,11 @@ from PIL import Image
 from safetensors.numpy import load as safetensor_load
 from torch.utils.data import DataLoader, Dataset, Subset
 
+from src.bentxt_generation import (
+    GENERATION_BUCKETS,
+    bucket_indices,
+    validate_bucket_values,
+)
 from src.bentxt_grounding import (
     GroundingFormat,
     format_grounding_prompt,
@@ -760,6 +765,8 @@ class BENTxTDataModule(pl.LightningDataModule):
             validation_subset_size: int | None = None,
             validation_subset_seed: int = 42,
             test_splits: Iterable[str] = ("test",),
+            evaluation_batch_sizes: Mapping[str, int] | None = None,
+            evaluation_num_workers_by_bucket: Mapping[str, int] | None = None,
     ):
         """
         Initialize the BigEarthNet.txt DataModule.
@@ -810,6 +817,11 @@ class BENTxTDataModule(pl.LightningDataModule):
             validation_subset_seed: Seed for the fixed validation subset.
             test_splits: Dataset split or splits exposed through Lightning's
                 test loop. Use `("bench",)` for official benchmark evaluation.
+            evaluation_batch_sizes: Optional batch size for each task-aware
+                generation bucket. When set, evaluation uses separate
+                short-answer, bounding-box and caption DataLoaders.
+            evaluation_num_workers_by_bucket: Optional DataLoader worker count
+                for each task-aware evaluation bucket.
         """
         super().__init__()
         if num_workers_dataloader is None or num_workers_dataloader < 0:
@@ -834,6 +846,22 @@ class BENTxTDataModule(pl.LightningDataModule):
         self.validation_subset_size = validation_subset_size
         self.validation_subset_seed = validation_subset_seed
         self.test_splits = test_splits
+        self.evaluation_batch_sizes = validate_bucket_values(
+            evaluation_batch_sizes,
+            label="evaluation_batch_sizes",
+        )
+        self.evaluation_num_workers_by_bucket = validate_bucket_values(
+            evaluation_num_workers_by_bucket,
+            label="evaluation_num_workers_by_bucket",
+            minimum=0,
+        )
+        if (
+            self.evaluation_num_workers_by_bucket is not None
+            and self.evaluation_batch_sizes is None
+        ):
+            raise ValueError(
+                "evaluation_num_workers_by_bucket requires evaluation_batch_sizes"
+            )
         self._collator: Callable | None = None
         self._validation_collator: Callable | None = None
         self._test_collator: Callable | None = None
@@ -968,6 +996,36 @@ class BENTxTDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         """Create the DataLoader for the configured test split or splits."""
+        if self.evaluation_batch_sizes is not None:
+            if self.test_ds is None:
+                raise RuntimeError(
+                    "Dataset is not initialized; call setup for this stage first"
+                )
+            text_data = getattr(self.test_ds, "text_data", None)
+            if text_data is None or "type" not in text_data:
+                raise TypeError(
+                    "Task-aware evaluation requires a BigEarthNet.txt dataset "
+                    "with a text_data['type'] column"
+                )
+            indices_by_bucket = bucket_indices(
+                text_data["type"].astype(str).tolist()
+            )
+            collator = self._test_collator or self._collator or collate_normalized
+            return [
+                DataLoader(
+                    Subset(self.test_ds, indices_by_bucket[bucket]),
+                    batch_size=self.evaluation_batch_sizes[bucket],
+                    num_workers=(
+                        self.evaluation_num_workers_by_bucket[bucket]
+                        if self.evaluation_num_workers_by_bucket is not None
+                        else self.num_workers_dataloader
+                    ),
+                    shuffle=False,
+                    pin_memory=self.pin_memory,
+                    collate_fn=collator,
+                )
+                for bucket in GENERATION_BUCKETS
+            ]
         return self._create_dataloader(
             self.test_ds,
             shuffle=False,

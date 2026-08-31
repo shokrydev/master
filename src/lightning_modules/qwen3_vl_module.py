@@ -14,6 +14,10 @@ from torch.optim.lr_scheduler import LambdaLR
 from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
 
+from src.bentxt_generation import (
+    generation_bucket_for_task,
+    validate_bucket_values,
+)
 from src.data_modules.geo_aware_collator import (
     GeoAwareCollator,
     ValidationGenerationCollator,
@@ -60,6 +64,7 @@ class Qwen3VLModule(L.LightningModule):
         warmup_ratio: float = 0.1,
         max_steps: int | None = None,
         max_new_tokens: int = 256,
+        generation_max_new_tokens_by_bucket: dict[str, int] | None = None,
         validation_generation_sample_ids: list[str] | None = None,
         validation_generation_path: str | None = None,
         system_prompt: str | None = "You are a remote sensing image analysis assistant.",
@@ -118,6 +123,8 @@ class Qwen3VLModule(L.LightningModule):
             max_steps: Total training steps (for scheduler)
             max_new_tokens: Maximum tokens generated for validation examples and
                 test predictions.
+            generation_max_new_tokens_by_bucket: Optional task-aware generation
+                limits for short-answer, bounding-box and caption batches.
             validation_generation_sample_ids: Explicit sample IDs for qualitative
                 validation generations.
             validation_generation_path: JSONL file for qualitative validation
@@ -308,6 +315,10 @@ class Qwen3VLModule(L.LightningModule):
                 "num_non_rgb_tokens must equal non_rgb_spatial_pool_size ** 2 "
                 "for spatial_4x4 mode"
             )
+        generation_max_new_tokens_by_bucket = validate_bucket_values(
+            generation_max_new_tokens_by_bucket,
+            label="generation_max_new_tokens_by_bucket",
+        )
 
         self.save_hyperparameters()
 
@@ -328,6 +339,7 @@ class Qwen3VLModule(L.LightningModule):
         self.warmup_ratio = warmup_ratio
         self.max_steps = max_steps
         self.max_new_tokens = max_new_tokens
+        self.generation_max_new_tokens_by_bucket = generation_max_new_tokens_by_bucket
         self.validation_generation_sample_ids = tuple(
             str(sample_id) for sample_id in validation_generation_sample_ids
         )
@@ -382,6 +394,7 @@ class Qwen3VLModule(L.LightningModule):
         self._supervision_mask_validated = False
 
         self._prediction_export_count = 0
+        self._prediction_export_sample_ids: set[str] = set()
 
     def _trainer_or_none(self) -> Any | None:
         """Return the attached Trainer, or None for direct utility execution."""
@@ -1428,22 +1441,31 @@ class Qwen3VLModule(L.LightningModule):
                 token_ids.add(int(token_id))
         return token_ids
 
-    def _generate_for_batch(self, batch: dict[str, Any]) -> list[str]:
+    def _generate_for_batch(
+        self,
+        batch: dict[str, Any],
+        *,
+        max_new_tokens: int | None = None,
+    ) -> list[str]:
         """Run greedy generation and decode the assistant response without stripping content tokens."""
         gen_batch = {k: v for k, v in batch.items() if k != "labels"}
+        generation_limit = self.max_new_tokens if max_new_tokens is None else max_new_tokens
         was_training = self.model.training
         FastVisionModel.for_inference(self.model)
         try:
             with torch.no_grad():
                 generated_ids = self.model.generate(
                     **gen_batch,
-                    max_new_tokens=self.max_new_tokens,
+                    max_new_tokens=generation_limit,
                     do_sample=False,
                     use_cache=True,
                 )
         finally:
-            FastVisionModel.for_training(self.model)
-            self.model.train(was_training)
+            if was_training:
+                FastVisionModel.for_training(self.model)
+                self.model.train()
+            else:
+                self.model.eval()
         input_len = gen_batch["input_ids"].shape[-1]
         stop_token_ids = self._generation_stop_token_ids()
         predictions = []
@@ -1454,6 +1476,26 @@ class Qwen3VLModule(L.LightningModule):
             text = self.tokenizer.decode(response_ids, skip_special_tokens=False)
             predictions.append(text)
         return predictions
+
+    def _test_generation_settings(
+        self,
+        task_types: list[str] | None,
+    ) -> tuple[str | None, int]:
+        """Resolve the single generation bucket and cap for a test batch."""
+        if self.generation_max_new_tokens_by_bucket is None:
+            return None, self.max_new_tokens
+        if not task_types:
+            raise ValueError(
+                "Task-aware generation requires task_type metadata for every test row"
+            )
+        buckets = {generation_bucket_for_task(task_type) for task_type in task_types}
+        if len(buckets) != 1:
+            raise ValueError(
+                "Task-aware generation received a mixed bucket batch: "
+                f"task_types={sorted(set(task_types))}, buckets={sorted(buckets)}"
+            )
+        bucket = buckets.pop()
+        return bucket, self.generation_max_new_tokens_by_bucket[bucket]
 
     def on_fit_start(self) -> None:
         """Initialize the optional qualitative validation generation file."""
@@ -1554,6 +1596,8 @@ class Qwen3VLModule(L.LightningModule):
         lat: torch.Tensor | None,
         lon: torch.Tensor | None,
         sample_metadata: dict[str, Any],
+        generation_bucket: str | None = None,
+        generation_max_new_tokens: int | None = None,
     ) -> None:
         if not self.prediction_export_path:
             return
@@ -1577,12 +1621,24 @@ class Qwen3VLModule(L.LightningModule):
                     entry["run_label"] = self.run_label
                 if self.model_size is not None:
                     entry["model_size"] = self.model_size
+                if generation_bucket is not None:
+                    entry["generation_bucket"] = generation_bucket
+                if generation_max_new_tokens is not None:
+                    entry["generation_max_new_tokens"] = generation_max_new_tokens
                 for key, values in sample_metadata.items():
                     if values is not None:
                         entry[key] = values[index]
                 if lat is not None and lon is not None:
                     entry["lat"] = float(lat[index])
                     entry["lon"] = float(lon[index])
+                sample_id = entry.get("sample_id")
+                if sample_id is not None:
+                    sample_id = str(sample_id)
+                    if sample_id in self._prediction_export_sample_ids:
+                        raise RuntimeError(
+                            f"Duplicate sample_id in prediction export: {sample_id}"
+                        )
+                    self._prediction_export_sample_ids.add(sample_id)
                 handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 self._prediction_export_count += 1
 
@@ -1594,14 +1650,26 @@ class Qwen3VLModule(L.LightningModule):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("", encoding="utf-8")
         self._prediction_export_count = 0
+        self._prediction_export_sample_ids = set()
 
-    def test_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, Any]:
+    def test_step(
+        self,
+        batch: dict[str, Any],
+        batch_idx: int,
+        dataloader_idx: int = 0,
+    ) -> dict[str, Any]:
         """Test step with loss logging and optional raw prediction export."""
         batch, target_texts, lat, lon, _, sample_metadata = self._prepare_model_inputs(batch)
         if self.prediction_export_path:
             if self.max_new_tokens <= 0:
                 raise ValueError("prediction_export_path requires max_new_tokens to be positive")
-            predictions = self._generate_for_batch(batch)
+            generation_bucket, generation_limit = self._test_generation_settings(
+                sample_metadata.get("task_type")
+            )
+            predictions = self._generate_for_batch(
+                batch,
+                max_new_tokens=generation_limit,
+            )
 
             if batch_idx == 0 and predictions:
                 self._print(f"\n[Test Sample] Generated: {predictions[0][:500]}...")
@@ -1612,6 +1680,8 @@ class Qwen3VLModule(L.LightningModule):
                 lat=lat,
                 lon=lon,
                 sample_metadata=sample_metadata,
+                generation_bucket=generation_bucket,
+                generation_max_new_tokens=generation_limit,
             )
             result = {"generated": predictions[0] if predictions else ""}
         else:
@@ -1633,6 +1703,14 @@ class Qwen3VLModule(L.LightningModule):
     def on_test_epoch_end(self) -> None:
         """Report prediction export completion."""
         if self.prediction_export_path and self._prediction_export_count:
+            trainer = self._trainer_or_none()
+            datamodule = getattr(trainer, "datamodule", None) if trainer is not None else None
+            test_dataset = getattr(datamodule, "test_ds", None)
+            if test_dataset is not None and self._prediction_export_count != len(test_dataset):
+                raise RuntimeError(
+                    "Prediction export row count does not match the test dataset: "
+                    f"exported={self._prediction_export_count}, expected={len(test_dataset)}"
+                )
             self._print(
                 f"Saved {self._prediction_export_count} predictions to "
                 f"{self.prediction_export_path}"
