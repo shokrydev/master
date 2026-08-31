@@ -215,6 +215,84 @@ class SubmissionScriptsTest(unittest.TestCase):
             self.assertIn("--worker-counts 8 10 12", result.stdout)
             self.assertIn("Submitted batch job 99991", result.stdout)
 
+    def test_existing_fit_trajectory_helper_dry_run_submits_only_evaluations(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_server_env(workdir)
+            scripts_dir = workdir / "scripts"
+            scripts_dir.mkdir()
+            for name in (
+                "submit_2b_trajectory_evaluations.sh",
+                "submit_evaluation_job.sh",
+            ):
+                shutil.copy2(REPO_ROOT / "scripts" / name, scripts_dir / name)
+
+            result = subprocess.run(
+                [
+                    str(scripts_dir / "submit_2b_trajectory_evaluations.sh"),
+                    "--short-batch",
+                    "128",
+                    "--bbox-batch",
+                    "64",
+                    "--caption-batch",
+                    "16",
+                    "--short-workers",
+                    "12",
+                    "--bbox-workers",
+                    "10",
+                    "--caption-workers",
+                    "8",
+                    "--dry-run",
+                ],
+                cwd=workdir,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.count("[Dry run - not submitting]"), 60)
+            self.assertEqual(result.stdout.count("coordinate_perturbation shuffled"), 12)
+            self.assertIn("bigearthnet_11807/qlora_adapter_steps/step_000050", result.stdout)
+            self.assertIn("bigearthnet_11814/qlora_adapter", result.stdout)
+            self.assertNotIn("submit_finetuning_job", result.stdout)
+
+    def test_clair_submission_exports_gguf_path_and_forwards_scorer_args(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_server_env(workdir)
+            scripts_dir = workdir / "scripts"
+            scripts_dir.mkdir()
+            shutil.copy2(REPO_ROOT / "scripts/submit_clair_job.sh", scripts_dir)
+            predictions = workdir / "predictions.jsonl"
+            predictions.touch()
+            model = workdir / "judge.gguf"
+            model.touch()
+
+            result = subprocess.run(
+                [
+                    str(scripts_dir / "submit_clair_job.sh"),
+                    "--predictions",
+                    str(predictions),
+                    "--model-path",
+                    str(model),
+                    "--concurrency",
+                    "8",
+                    "--limit",
+                    "32",
+                    "--dry-run",
+                ],
+                cwd=workdir,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"CLAIR_MODEL_PATH={model}", result.stdout)
+            self.assertIn("--concurrency 8 --limit 32", result.stdout)
+            self.assertIn("[Dry run - not submitting]", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
