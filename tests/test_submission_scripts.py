@@ -257,6 +257,85 @@ class SubmissionScriptsTest(unittest.TestCase):
             self.assertIn("bigearthnet_11814/qlora_adapter", result.stdout)
             self.assertNotIn("submit_finetuning_job", result.stdout)
 
+    def test_existing_fit_trajectory_helper_writes_job_manifest(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_server_env(workdir)
+            scripts_dir = workdir / "scripts"
+            scripts_dir.mkdir()
+            for name in (
+                "submit_2b_trajectory_evaluations.sh",
+                "submit_evaluation_job.sh",
+            ):
+                shutil.copy2(REPO_ROOT / "scripts" / name, scripts_dir / name)
+
+            mock_bin = workdir / "bin"
+            mock_bin.mkdir()
+            counter = workdir / "counter"
+            counter.write_text("30000\n", encoding="utf-8")
+            call_log = workdir / "sbatch-calls"
+            mock_sbatch = mock_bin / "sbatch"
+            mock_sbatch.write_text(
+                "#!/bin/bash\n"
+                f"counter={counter!s}\n"
+                f"call_log={call_log!s}\n"
+                'printf \'%s\\n\' "$*" >> "$call_log"\n'
+                'job=$(cat "$counter")\n'
+                'job=$((job + 1))\n'
+                'echo "$job" > "$counter"\n'
+                'echo "Submitted batch job $job"\n',
+                encoding="utf-8",
+            )
+            mock_sbatch.chmod(0o755)
+            manifest = workdir / "trajectory.tsv"
+            model = workdir / "judge.gguf"
+            model.touch()
+            env = os.environ.copy()
+            env["PATH"] = f"{mock_bin}:{env['PATH']}"
+            result = subprocess.run(
+                [
+                    str(scripts_dir / "submit_2b_trajectory_evaluations.sh"),
+                    "--short-batch",
+                    "128",
+                    "--bbox-batch",
+                    "64",
+                    "--caption-batch",
+                    "16",
+                    "--short-workers",
+                    "12",
+                    "--bbox-workers",
+                    "10",
+                    "--caption-workers",
+                    "8",
+                    "--manifest",
+                    str(manifest),
+                    "--submit-clair",
+                    "--clair-model-path",
+                    str(model),
+                ],
+                cwd=workdir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = manifest.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 61)
+            self.assertTrue(lines[1].startswith("30001\t11807\tno_loc\t42\t50\tcorrect\t"))
+            self.assertIn("\t11814\tloc_additive_satclip\t43\tfinal\tshuffled\t", lines[-1])
+            clair_lines = (workdir / "trajectory_clair_jobs.tsv").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            self.assertEqual(len(clair_lines), 9)
+            self.assertTrue(clair_lines[1].startswith("30061\t11807\tno_loc\t42\t"))
+            self.assertTrue(clair_lines[-1].startswith("30068\t11814\t"))
+            calls = call_log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(calls), 68)
+            self.assertIn("--dependency=afterok:30001:30002:30003:30004:30005:30006", calls[60])
+            self.assertIn("CLAIR_FIT_JOB=11814", calls[-1])
+
     def test_clair_submission_exports_gguf_path_and_forwards_scorer_args(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)

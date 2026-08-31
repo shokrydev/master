@@ -17,6 +17,8 @@ Usage:
 
   ./scripts/sync_server_runs.sh --jobs-from-squeue
 
+  ./scripts/sync_server_runs.sh --jobs-from-manifest outputs/submission_manifests/2b_trajectory.tsv
+
 The second form reads connection defaults from .env and job ids from
 planning/run_registry.md.
 
@@ -29,6 +31,7 @@ Options:
                               Server EVALUATION_OUTPUT_ROOT
   --jobs JOB...               Slurm job ids to sync
   --jobs-from-squeue          Read active job ids from remote Slurm squeue
+  --jobs-from-manifest PATH   Read evaluation_job ids from a trajectory TSV manifest
   --jobs-from-registry PATH    Read job ids from a registry, default planning/run_registry.md
   --dry-run                   Print rsync commands without copying
   -h, --help                  Show this help
@@ -71,6 +74,7 @@ LOCAL_OUTPUT_ROOT="outputs"
 DRY_RUN=false
 REGISTRY_PATH="planning/run_registry.md"
 JOBS_FROM_SQUEUE=false
+JOBS_MANIFEST=""
 JOBS=()
 
 while [[ $# -gt 0 ]]; do
@@ -106,6 +110,11 @@ while [[ $# -gt 0 ]]; do
             JOBS_FROM_SQUEUE=true
             shift
             ;;
+        --jobs-from-manifest)
+            require_arg "$1" "${2:-}"
+            JOBS_MANIFEST="$2"
+            shift 2
+            ;;
         --jobs-from-registry)
             require_arg "$1" "${2:-}"
             REGISTRY_PATH="$2"
@@ -127,6 +136,34 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+selection_count=0
+if [ "${#JOBS[@]}" -gt 0 ]; then
+    selection_count=$((selection_count + 1))
+fi
+if [ "$JOBS_FROM_SQUEUE" = true ]; then
+    selection_count=$((selection_count + 1))
+fi
+if [ -n "$JOBS_MANIFEST" ]; then
+    selection_count=$((selection_count + 1))
+fi
+if [ "$selection_count" -gt 1 ]; then
+    echo "Use only one of --jobs, --jobs-from-squeue, or --jobs-from-manifest."
+    exit 1
+fi
+if [ -n "$JOBS_MANIFEST" ]; then
+    if [ ! -f "$JOBS_MANIFEST" ]; then
+        echo "Submission manifest does not exist: $JOBS_MANIFEST"
+        exit 1
+    fi
+    mapfile -t JOBS < <(
+        awk -F '\t' 'NR > 1 && $1 ~ /^[0-9]+$/ && !seen[$1]++ { print $1 }' "$JOBS_MANIFEST"
+    )
+    if [ "${#JOBS[@]}" -eq 0 ]; then
+        echo "No evaluation job IDs found in manifest: $JOBS_MANIFEST"
+        exit 1
+    fi
+    echo "Using ${#JOBS[@]} evaluation job IDs from $JOBS_MANIFEST."
+fi
 if [ "${#JOBS[@]}" -eq 0 ] && [ "$JOBS_FROM_SQUEUE" = false ]; then
     if [ ! -f "$REGISTRY_PATH" ]; then
         echo "Missing --jobs and registry file does not exist: $REGISTRY_PATH"
@@ -147,10 +184,6 @@ if [ -z "$HOST" ] || [ -z "$REMOTE_REPO" ] || [ -z "$REMOTE_FINETUNING_OUTPUT_RO
     echo "SERVER_REPO_ROOT, SERVER_FINETUNING_OUTPUT_ROOT and"
     echo "SERVER_EVALUATION_OUTPUT_ROOT in .env."
     usage
-    exit 1
-fi
-if [ "$JOBS_FROM_SQUEUE" = true ] && [ "${#JOBS[@]}" -gt 0 ]; then
-    echo "Use either --jobs or --jobs-from-squeue, not both."
     exit 1
 fi
 if ! command -v rsync >/dev/null 2>&1; then

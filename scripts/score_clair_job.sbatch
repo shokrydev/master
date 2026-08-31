@@ -34,7 +34,21 @@ if [ ! -f "$CLAIR_MODEL_PATH" ]; then
     exit 1
 fi
 
-output_dir="${EVALUATION_OUTPUT_ROOT%/}/clair_${SLURM_JOB_ID}"
+if [ -n "${CLAIR_TRAJECTORY_MANIFEST:-}" ] || [ -n "${CLAIR_FIT_JOB:-}" ]; then
+    if [ -z "${CLAIR_TRAJECTORY_MANIFEST:-}" ] || [ -z "${CLAIR_FIT_JOB:-}" ]; then
+        echo "CLAIR_TRAJECTORY_MANIFEST and CLAIR_FIT_JOB must be set together."
+        exit 1
+    fi
+    if [ ! -f "$CLAIR_TRAJECTORY_MANIFEST" ]; then
+        echo "Trajectory manifest is unavailable: $CLAIR_TRAJECTORY_MANIFEST"
+        exit 1
+    fi
+    output_dir="${EVALUATION_OUTPUT_ROOT%/}/clair_fit_${CLAIR_FIT_JOB}_${SLURM_JOB_ID}"
+    run_mode="trajectory fit ${CLAIR_FIT_JOB}"
+else
+    output_dir="${EVALUATION_OUTPUT_ROOT%/}/clair_${SLURM_JOB_ID}"
+    run_mode="single export"
+fi
 mkdir -p "$output_dir"
 port=$((20000 + SLURM_JOB_ID % 20000))
 base_url="http://127.0.0.1:${port}/v1"
@@ -42,6 +56,7 @@ server_log="$output_dir/llama_server.log"
 llama_version="$($LLAMA_BIN version 2>&1 | head -n 1)"
 
 echo "CLAIR output: $output_dir"
+echo "Run mode: $run_mode"
 echo "Judge model: $CLAIR_MODEL_PATH"
 echo "llama.cpp: $llama_version"
 echo "Server URL: $base_url"
@@ -83,9 +98,40 @@ if ! curl -fsS "http://127.0.0.1:${port}/health" >/dev/null; then
     exit 1
 fi
 
-uv run python scripts/score_bentxt_clair.py \
-    --output-dir "$output_dir" \
-    --base-url "$base_url" \
-    --model-path "$CLAIR_MODEL_PATH" \
-    --llama-version "$llama_version" \
-    "$@"
+if [ -n "${CLAIR_TRAJECTORY_MANIFEST:-}" ]; then
+    scored_count=0
+    while IFS=$'\t' read -r evaluation_job fit_job condition seed step coordinate_setting adapter_dir run_label; do
+        if [ "$evaluation_job" = evaluation_job ] || [ "$fit_job" != "$CLAIR_FIT_JOB" ]; then
+            continue
+        fi
+        predictions="${EVALUATION_OUTPUT_ROOT%/}/bigearthnet_${evaluation_job}/predictions.jsonl"
+        clair_output="${EVALUATION_OUTPUT_ROOT%/}/bigearthnet_${evaluation_job}/clair_qwen38_q6"
+        if [ ! -f "$predictions" ]; then
+            echo "Missing predictions for evaluation job $evaluation_job: $predictions"
+            exit 1
+        fi
+        echo "Scoring evaluation job $evaluation_job: condition=$condition seed=$seed step=$step setting=$coordinate_setting"
+        uv run python scripts/score_bentxt_clair.py \
+            "$predictions" \
+            --output-dir "$clair_output" \
+            --base-url "$base_url" \
+            --model-path "$CLAIR_MODEL_PATH" \
+            --llama-version "$llama_version" \
+            "$@"
+        scored_count=$((scored_count + 1))
+    done < "$CLAIR_TRAJECTORY_MANIFEST"
+
+    if [ "$scored_count" -ne 6 ] && [ "$scored_count" -ne 8 ]; then
+        echo "Expected 6 or 8 trajectory exports for fit $CLAIR_FIT_JOB, scored $scored_count."
+        exit 1
+    fi
+    printf '%s\n' "$scored_count" > "$output_dir/scored_export_count.txt"
+    echo "Completed CLAIR scoring for $scored_count exports from fit $CLAIR_FIT_JOB."
+else
+    uv run python scripts/score_bentxt_clair.py \
+        --output-dir "$output_dir" \
+        --base-url "$base_url" \
+        --model-path "$CLAIR_MODEL_PATH" \
+        --llama-version "$llama_version" \
+        "$@"
+fi
