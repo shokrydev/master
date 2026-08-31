@@ -92,6 +92,29 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# OmegaConf interpolation in the base YAML is resolved before a later CLI
+# --seed_everything override. Forward the declared run seed explicitly so new
+# submissions vary row order across seeds while remaining matched by condition.
+DECLARED_SEED=""
+HAS_EXPLICIT_TRAINING_SHUFFLE_SEED=false
+for ((INDEX = 0; INDEX < ${#EXTRA_ARGS[@]}; INDEX++)); do
+    case "${EXTRA_ARGS[$INDEX]}" in
+        --seed_everything)
+            require_arg "--seed_everything" "${EXTRA_ARGS[$((INDEX + 1))]:-}"
+            DECLARED_SEED="${EXTRA_ARGS[$((INDEX + 1))]}"
+            ;;
+        --seed_everything=*)
+            DECLARED_SEED="${EXTRA_ARGS[$INDEX]#*=}"
+            ;;
+        --data.init_args.training_shuffle_seed|--data.init_args.training_shuffle_seed=*)
+            HAS_EXPLICIT_TRAINING_SHUFFLE_SEED=true
+            ;;
+    esac
+done
+if [ -n "$DECLARED_SEED" ] && [ "$HAS_EXPLICIT_TRAINING_SHUFFLE_SEED" = false ]; then
+    EXTRA_ARGS+=(--data.init_args.training_shuffle_seed "$DECLARED_SEED")
+fi
+
 for EXTRA_ARG in "${EXTRA_ARGS[@]}"; do
     case "$EXTRA_ARG" in
         configs/finetuning/ablations/loc_text_*.yaml)

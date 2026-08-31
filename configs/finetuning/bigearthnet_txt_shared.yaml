@@ -110,8 +110,8 @@ data:
     grounding_format: qwen3_json
     use_location_redacted_captions: false
     location_redacted_caption_file: null
-    # Isolate row shuffling from condition-specific model initialization RNG
-    # while giving each declared experiment seed its own order.
-    training_shuffle_seed: ${seed_everything}
+    # The submission helper overrides this with the declared experiment seed.
+    # Keep the explicit fallback for direct CLI/debug invocations.
+    training_shuffle_seed: 42
     batch_size: 128
     num_workers_dataloader: 12

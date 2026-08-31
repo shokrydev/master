@@ -146,6 +146,20 @@ class SubmissionScriptsTest(unittest.TestCase):
             self.assertEqual(len(calls), 68)
             self.assertTrue(all("--parsable" in call for call in calls[:8]))
             self.assertTrue(all("--parsable" not in call for call in calls[8:]))
+            self.assertTrue(
+                all(
+                    "--seed_everything 42 --data.init_args.training_shuffle_seed 42"
+                    in call
+                    for call in calls[:4]
+                )
+            )
+            self.assertTrue(
+                all(
+                    "--seed_everything 43 --data.init_args.training_shuffle_seed 43"
+                    in call
+                    for call in calls[4:8]
+                )
+            )
             self.assertEqual(result.stdout.count("Submitted batch job"), 68)
             self.assertIn(
                 "/tmp/finetuning/bigearthnet_90001/qlora_adapter_steps/step_000050",

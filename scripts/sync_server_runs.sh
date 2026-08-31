@@ -253,16 +253,26 @@ fi
 for JOB in "${JOBS[@]}"; do
     REMOTE_FINETUNING_RUN_DIR="$REMOTE_FINETUNING_OUTPUT_ROOT/bigearthnet_$JOB"
     REMOTE_EVALUATION_RUN_DIR="$REMOTE_EVALUATION_OUTPUT_ROOT/bigearthnet_$JOB"
+    REMOTE_BATCH_PROFILE_DIR="$REMOTE_EVALUATION_OUTPUT_ROOT/batch_profile_$JOB"
+    REMOTE_CLAIR_DIR="$REMOTE_EVALUATION_OUTPUT_ROOT/clair_$JOB"
     if remote_dir_exists "$REMOTE_FINETUNING_RUN_DIR"; then
         RUN_KIND="finetuning"
         SYNC_RUN_DIR="$REMOTE_FINETUNING_RUN_DIR"
     elif remote_dir_exists "$REMOTE_EVALUATION_RUN_DIR"; then
         RUN_KIND="evaluation"
         SYNC_RUN_DIR="$REMOTE_EVALUATION_RUN_DIR"
+    elif remote_dir_exists "$REMOTE_BATCH_PROFILE_DIR"; then
+        RUN_KIND="evaluation"
+        SYNC_RUN_DIR="$REMOTE_BATCH_PROFILE_DIR"
+    elif remote_dir_exists "$REMOTE_CLAIR_DIR"; then
+        RUN_KIND="evaluation"
+        SYNC_RUN_DIR="$REMOTE_CLAIR_DIR"
     else
         echo "Warning: remote run directory not found for job $JOB:"
         echo "  $REMOTE_FINETUNING_RUN_DIR"
         echo "  $REMOTE_EVALUATION_RUN_DIR"
+        echo "  $REMOTE_BATCH_PROFILE_DIR"
+        echo "  $REMOTE_CLAIR_DIR"
         continue
     fi
 
@@ -306,6 +316,7 @@ for JOB in "${JOBS[@]}"; do
         --include="*.jsonl" \
         --include="*.json" \
         --include="*.csv" \
+        --include="*.log" \
         --include="*.yaml" \
         --include="*.yml" \
         --include="*.txt" \
