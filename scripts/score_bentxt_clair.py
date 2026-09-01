@@ -62,15 +62,16 @@ def _write_json(path: Path, value: Any) -> None:
 
 
 def _load_judge(model_name_or_path: str, max_sequence_length: int):
-    from unsloth import FastModel
+    from transformers import AutoTokenizer, Qwen3_5ForConditionalGeneration
 
-    model, tokenizer = FastModel.from_pretrained(
-        model_name=model_name_or_path,
-        max_seq_length=max_sequence_length,
-        dtype=None,
-        load_in_4bit=True,
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+    model = Qwen3_5ForConditionalGeneration.from_pretrained(
+        model_name_or_path,
+        device_map="auto",
+        dtype="auto",
+        low_cpu_mem_usage=True,
     )
-    FastModel.for_inference(model)
+    model.eval()
     tokenizer.padding_side = "left"
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -222,7 +223,7 @@ def main() -> None:
     model, tokenizer = _load_judge(args.model_name_or_path, args.max_sequence_length)
     model_config = getattr(model, "config", None)
     provenance = {
-        "backend": "unsloth-transformers",
+        "backend": "transformers-bitsandbytes",
         "judge_label": args.judge_label,
         "model_name_or_path": args.model_name_or_path,
         "model_commit_hash": getattr(model_config, "_commit_hash", None),
