@@ -33,6 +33,12 @@ if [ ! -f "$CLAIR_MODEL_PATH" ]; then
     echo "CLAIR GGUF is unavailable: $CLAIR_MODEL_PATH"
     exit 1
 fi
+llama_devices="$($LLAMA_BIN serve --list-devices 2>&1)"
+printf '%s\n' "$llama_devices"
+if ! grep -q 'CUDA' <<<"$llama_devices"; then
+    echo "CLAIR requires a CUDA-enabled llama.cpp binary with a visible GPU."
+    exit 1
+fi
 
 if [ -n "${CLAIR_TRAJECTORY_MANIFEST:-}" ] || [ -n "${CLAIR_FIT_JOB:-}" ]; then
     if [ -z "${CLAIR_TRAJECTORY_MANIFEST:-}" ] || [ -z "${CLAIR_FIT_JOB:-}" ]; then

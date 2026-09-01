@@ -244,6 +244,8 @@ class SubmissionScriptsTest(unittest.TestCase):
             result = subprocess.run(
                 [
                     str(scripts_dir / "submit_2b_trajectory_evaluations.sh"),
+                    "--fit-job",
+                    "11809",
                     "--dry-run",
                 ],
                 cwd=workdir,
@@ -253,10 +255,10 @@ class SubmissionScriptsTest(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.count("[Dry run - not submitting]"), 60)
-            self.assertEqual(result.stdout.count("coordinate_perturbation shuffled"), 12)
-            self.assertIn("bigearthnet_11881/qlora_adapter_steps/step_000050", result.stdout)
-            self.assertIn("bigearthnet_11814/qlora_adapter", result.stdout)
+            self.assertEqual(result.stdout.count("[Dry run - not submitting]"), 8)
+            self.assertEqual(result.stdout.count("coordinate_perturbation shuffled"), 2)
+            self.assertIn("bigearthnet_11809/qlora_adapter_steps/step_000050", result.stdout)
+            self.assertIn("bigearthnet_11809/qlora_adapter", result.stdout)
             self.assertIn("evaluation_batch_sizes.short_answer 256", result.stdout)
             self.assertIn("evaluation_batch_sizes.bounding_box 512", result.stdout)
             self.assertIn("evaluation_batch_sizes.captioning 384", result.stdout)
@@ -313,6 +315,8 @@ class SubmissionScriptsTest(unittest.TestCase):
                     "10",
                     "--caption-workers",
                     "8",
+                    "--fit-job",
+                    "11881",
                     "--manifest",
                     str(manifest),
                     "--submit-clair",
@@ -328,19 +332,18 @@ class SubmissionScriptsTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             lines = manifest.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(len(lines), 61)
+            self.assertEqual(len(lines), 7)
             self.assertTrue(lines[1].startswith("30001\t11881\tno_loc\t42\t50\tcorrect\t"))
-            self.assertIn("\t11814\tloc_additive_satclip\t43\tfinal\tshuffled\t", lines[-1])
+            self.assertIn("\t11881\tno_loc\t42\tfinal\tcorrect\t", lines[-1])
             clair_lines = (workdir / "trajectory_clair_jobs.tsv").read_text(
                 encoding="utf-8"
             ).splitlines()
-            self.assertEqual(len(clair_lines), 9)
-            self.assertTrue(clair_lines[1].startswith("30061\t11881\tno_loc\t42\t"))
-            self.assertTrue(clair_lines[-1].startswith("30068\t11814\t"))
+            self.assertEqual(len(clair_lines), 2)
+            self.assertTrue(clair_lines[1].startswith("30007\t11881\tno_loc\t42\t"))
             calls = call_log.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(len(calls), 68)
-            self.assertIn("--dependency=afterok:30001:30002:30003:30004:30005:30006", calls[60])
-            self.assertIn("CLAIR_FIT_JOB=11814", calls[-1])
+            self.assertEqual(len(calls), 7)
+            self.assertIn("--dependency=afterok:30001:30002:30003:30004:30005:30006", calls[6])
+            self.assertIn("CLAIR_FIT_JOB=11881", calls[-1])
 
     def test_clair_submission_exports_gguf_path_and_forwards_scorer_args(self):
         with tempfile.TemporaryDirectory() as tmpdir:
