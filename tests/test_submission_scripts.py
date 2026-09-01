@@ -244,18 +244,6 @@ class SubmissionScriptsTest(unittest.TestCase):
             result = subprocess.run(
                 [
                     str(scripts_dir / "submit_2b_trajectory_evaluations.sh"),
-                    "--short-batch",
-                    "128",
-                    "--bbox-batch",
-                    "64",
-                    "--caption-batch",
-                    "16",
-                    "--short-workers",
-                    "12",
-                    "--bbox-workers",
-                    "10",
-                    "--caption-workers",
-                    "8",
                     "--dry-run",
                 ],
                 cwd=workdir,
@@ -267,8 +255,12 @@ class SubmissionScriptsTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.count("[Dry run - not submitting]"), 60)
             self.assertEqual(result.stdout.count("coordinate_perturbation shuffled"), 12)
-            self.assertIn("bigearthnet_11807/qlora_adapter_steps/step_000050", result.stdout)
+            self.assertIn("bigearthnet_11881/qlora_adapter_steps/step_000050", result.stdout)
             self.assertIn("bigearthnet_11814/qlora_adapter", result.stdout)
+            self.assertIn("evaluation_batch_sizes.short_answer 256", result.stdout)
+            self.assertIn("evaluation_batch_sizes.bounding_box 512", result.stdout)
+            self.assertIn("evaluation_batch_sizes.captioning 384", result.stdout)
+            self.assertIn("evaluation_num_workers_by_bucket.short_answer 8", result.stdout)
             self.assertNotIn("submit_finetuning_job", result.stdout)
 
     def test_existing_fit_trajectory_helper_writes_job_manifest(self):
@@ -337,13 +329,13 @@ class SubmissionScriptsTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             lines = manifest.read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(lines), 61)
-            self.assertTrue(lines[1].startswith("30001\t11807\tno_loc\t42\t50\tcorrect\t"))
+            self.assertTrue(lines[1].startswith("30001\t11881\tno_loc\t42\t50\tcorrect\t"))
             self.assertIn("\t11814\tloc_additive_satclip\t43\tfinal\tshuffled\t", lines[-1])
             clair_lines = (workdir / "trajectory_clair_jobs.tsv").read_text(
                 encoding="utf-8"
             ).splitlines()
             self.assertEqual(len(clair_lines), 9)
-            self.assertTrue(clair_lines[1].startswith("30061\t11807\tno_loc\t42\t"))
+            self.assertTrue(clair_lines[1].startswith("30061\t11881\tno_loc\t42\t"))
             self.assertTrue(clair_lines[-1].startswith("30068\t11814\t"))
             calls = call_log.read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(calls), 68)

@@ -49,15 +49,14 @@ data:
     location_redacted_caption_file: null
     coordinate_perturbation: null
     test_splits: [bench]
-    # Safe bootstrap values. Replace all three with the profiler's locked 2B
-    # recommendations before submitting the dependent evaluation matrix.
+    # Locked 2B throughput settings from task-aware profiler job 11836.
     evaluation_batch_sizes:
-      short_answer: 1
-      bounding_box: 1
-      captioning: 1
+      short_answer: 256
+      bounding_box: 512
+      captioning: 384
     evaluation_num_workers_by_bucket:
-      short_answer: 4
-      bounding_box: 4
-      captioning: 4
+      short_answer: 8
+      bounding_box: 8
+      captioning: 8
     batch_size: 1
     num_workers_dataloader: 4

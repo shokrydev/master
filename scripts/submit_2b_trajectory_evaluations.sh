@@ -1,15 +1,17 @@
 #!/bin/bash
-# Submit only the prespecified evaluations for the already-running 2B fits
-# 11807--11814. The all-in-one fit+evaluation helper remains unchanged.
+# Submit only the prespecified evaluations for the corrected 2B trajectory
+# fits. The all-in-one fit+evaluation helper remains unchanged.
 
 set -euo pipefail
 
-SHORT_BATCH=""
-BBOX_BATCH=""
-CAPTION_BATCH=""
-SHORT_WORKERS=""
-BBOX_WORKERS=""
-CAPTION_WORKERS=""
+# Locked by task-aware profiler job 11836. Command-line flags remain available
+# for explicit diagnostic overrides.
+SHORT_BATCH="256"
+BBOX_BATCH="512"
+CAPTION_BATCH="384"
+SHORT_WORKERS="8"
+BBOX_WORKERS="8"
+CAPTION_WORKERS="8"
 MANIFEST=""
 SUBMIT_CLAIR=false
 CLAIR_MODEL_PATH="${CLAIR_MODEL_PATH:-}"
@@ -79,8 +81,8 @@ SEEDS=(42 43)
 CORRECT_STEPS=(50 100 500 1000 5000 final)
 SHUFFLED_STEPS=(1000 final)
 declare -A FIT_IDS=(
-    [42:no_loc]=11807
-    [42:loc_text]=11808
+    [42:no_loc]=11881
+    [42:loc_text]=11882
     [42:loc_embed]=11809
     [42:loc_additive_satclip]=11810
     [43:no_loc]=11811
@@ -182,7 +184,7 @@ for seed in "${SEEDS[@]}"; do
     done
 done
 
-echo "Submitted 60 evaluation-only trajectory jobs for fits 11807--11814."
+echo "Submitted 60 evaluation-only trajectory jobs for corrected fits 11809--11814 and replacements 11881--11882."
 if [ "$DRY_RUN" = false ]; then
     echo "Wrote submission manifest: $MANIFEST"
 fi
