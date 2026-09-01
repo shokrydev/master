@@ -20,25 +20,19 @@ set -a
 source .env
 set +a
 
-LLAMA_BIN="${LLAMA_BIN:-$HOME/.local/bin/llama}"
-if [ -z "${EVALUATION_OUTPUT_ROOT:-}" ] || [ -z "${CLAIR_MODEL_PATH:-}" ]; then
-    echo "EVALUATION_OUTPUT_ROOT and CLAIR_MODEL_PATH are required."
+CLAIR_MODEL_NAME_OR_PATH="${CLAIR_MODEL_NAME_OR_PATH:-unsloth/Qwen3.8-27B-unsloth-bnb-4bit}"
+if [ -z "${EVALUATION_OUTPUT_ROOT:-}" ]; then
+    echo "EVALUATION_OUTPUT_ROOT is required."
     exit 1
 fi
-if [ ! -x "$LLAMA_BIN" ]; then
-    echo "llama executable is unavailable: $LLAMA_BIN"
-    exit 1
-fi
-if [ ! -f "$CLAIR_MODEL_PATH" ]; then
-    echo "CLAIR GGUF is unavailable: $CLAIR_MODEL_PATH"
-    exit 1
-fi
-llama_devices="$($LLAMA_BIN serve --list-devices 2>&1)"
-printf '%s\n' "$llama_devices"
-if ! grep -q 'CUDA' <<<"$llama_devices"; then
-    echo "CLAIR requires a CUDA-enabled llama.cpp binary with a visible GPU."
-    exit 1
-fi
+
+uv run python -c \
+    'import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'
+
+scorer_args=(
+    --model-name-or-path "$CLAIR_MODEL_NAME_OR_PATH"
+    "$@"
+)
 
 if [ -n "${CLAIR_TRAJECTORY_MANIFEST:-}" ] || [ -n "${CLAIR_FIT_JOB:-}" ]; then
     if [ -z "${CLAIR_TRAJECTORY_MANIFEST:-}" ] || [ -z "${CLAIR_FIT_JOB:-}" ]; then
@@ -49,95 +43,53 @@ if [ -n "${CLAIR_TRAJECTORY_MANIFEST:-}" ] || [ -n "${CLAIR_FIT_JOB:-}" ]; then
         echo "Trajectory manifest is unavailable: $CLAIR_TRAJECTORY_MANIFEST"
         exit 1
     fi
-    output_dir="${EVALUATION_OUTPUT_ROOT%/}/clair_fit_${CLAIR_FIT_JOB}_${SLURM_JOB_ID}"
-    run_mode="trajectory fit ${CLAIR_FIT_JOB}"
-else
-    output_dir="${EVALUATION_OUTPUT_ROOT%/}/clair_${SLURM_JOB_ID}"
-    run_mode="single export"
-fi
-mkdir -p "$output_dir"
-port=$((20000 + SLURM_JOB_ID % 20000))
-base_url="http://127.0.0.1:${port}/v1"
-server_log="$output_dir/llama_server.log"
-llama_version="$($LLAMA_BIN version 2>&1 | head -n 1)"
-
-echo "CLAIR output: $output_dir"
-echo "Run mode: $run_mode"
-echo "Judge model: $CLAIR_MODEL_PATH"
-echo "llama.cpp: $llama_version"
-echo "Server URL: $base_url"
-echo "Scorer arguments: $*"
-
-"$LLAMA_BIN" serve \
-    --model "$CLAIR_MODEL_PATH" \
-    --host 127.0.0.1 \
-    --port "$port" \
-    --n-gpu-layers 999 \
-    --ctx-size 16384 \
-    --parallel 8 \
-    --batch-size 2048 \
-    --ubatch-size 512 \
-    --jinja \
-    >"$server_log" 2>&1 &
-server_pid=$!
-
-cleanup() {
-    kill "$server_pid" 2>/dev/null || true
-    wait "$server_pid" 2>/dev/null || true
-}
-trap cleanup EXIT
-
-for _ in $(seq 1 180); do
-    if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
-        break
-    fi
-    if ! kill -0 "$server_pid" 2>/dev/null; then
-        echo "llama server exited during startup."
-        tail -n 100 "$server_log"
-        exit 1
-    fi
-    sleep 2
-done
-if ! curl -fsS "http://127.0.0.1:${port}/health" >/dev/null; then
-    echo "llama server did not become healthy."
-    tail -n 100 "$server_log"
-    exit 1
-fi
-
-if [ -n "${CLAIR_TRAJECTORY_MANIFEST:-}" ]; then
+    run_output="${EVALUATION_OUTPUT_ROOT%/}/clair_fit_${CLAIR_FIT_JOB}_${SLURM_JOB_ID}"
+    mkdir -p "$run_output"
     scored_count=0
     while IFS=$'\t' read -r evaluation_job fit_job condition seed step coordinate_setting adapter_dir run_label; do
         if [ "$evaluation_job" = evaluation_job ] || [ "$fit_job" != "$CLAIR_FIT_JOB" ]; then
             continue
         fi
         predictions="${EVALUATION_OUTPUT_ROOT%/}/bigearthnet_${evaluation_job}/predictions.jsonl"
-        clair_output="${EVALUATION_OUTPUT_ROOT%/}/bigearthnet_${evaluation_job}/clair_qwen38_q6"
+        clair_output="${EVALUATION_OUTPUT_ROOT%/}/bigearthnet_${evaluation_job}/clair_qwen38_bnb4"
         if [ ! -f "$predictions" ]; then
             echo "Missing predictions for evaluation job $evaluation_job: $predictions"
             exit 1
         fi
-        echo "Scoring evaluation job $evaluation_job: condition=$condition seed=$seed step=$step setting=$coordinate_setting"
-        uv run python scripts/score_bentxt_clair.py \
-            "$predictions" \
-            --output-dir "$clair_output" \
-            --base-url "$base_url" \
-            --model-path "$CLAIR_MODEL_PATH" \
-            --llama-version "$llama_version" \
-            "$@"
+        echo "Queued export $evaluation_job: condition=$condition seed=$seed step=$step setting=$coordinate_setting"
+        scorer_args+=(--score "$predictions" "$clair_output")
         scored_count=$((scored_count + 1))
     done < "$CLAIR_TRAJECTORY_MANIFEST"
 
     if [ "$scored_count" -ne 6 ] && [ "$scored_count" -ne 8 ]; then
-        echo "Expected 6 or 8 trajectory exports for fit $CLAIR_FIT_JOB, scored $scored_count."
+        echo "Expected 6 or 8 trajectory exports for fit $CLAIR_FIT_JOB, found $scored_count."
         exit 1
     fi
-    printf '%s\n' "$scored_count" > "$output_dir/scored_export_count.txt"
-    echo "Completed CLAIR scoring for $scored_count exports from fit $CLAIR_FIT_JOB."
+    printf '%s\n' "$scored_count" > "$run_output/scored_export_count.txt"
+    echo "CLAIR trajectory: fit $CLAIR_FIT_JOB, $scored_count exports"
 else
-    uv run python scripts/score_bentxt_clair.py \
-        --output-dir "$output_dir" \
-        --base-url "$base_url" \
-        --model-path "$CLAIR_MODEL_PATH" \
-        --llama-version "$llama_version" \
+    if [ "$#" -lt 1 ]; then
+        echo "Single-export mode requires a predictions.jsonl argument."
+        exit 1
+    fi
+    predictions="$1"
+    shift
+    if [ ! -f "$predictions" ]; then
+        echo "Predictions are unavailable: $predictions"
+        exit 1
+    fi
+    run_output="${EVALUATION_OUTPUT_ROOT%/}/clair_${SLURM_JOB_ID}"
+    mkdir -p "$run_output"
+    scorer_args=(
+        --model-name-or-path "$CLAIR_MODEL_NAME_OR_PATH"
         "$@"
+        --score "$predictions" "$run_output"
+    )
+    echo "CLAIR single export: $predictions"
 fi
+
+echo "Judge model: $CLAIR_MODEL_NAME_OR_PATH"
+printf 'Scorer command: uv run python scripts/score_bentxt_clair.py'
+printf ' %q' "${scorer_args[@]}"
+printf '\n'
+uv run python scripts/score_bentxt_clair.py "${scorer_args[@]}"

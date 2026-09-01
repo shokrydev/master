@@ -296,8 +296,6 @@ class SubmissionScriptsTest(unittest.TestCase):
             )
             mock_sbatch.chmod(0o755)
             manifest = workdir / "trajectory.tsv"
-            model = workdir / "judge.gguf"
-            model.touch()
             env = os.environ.copy()
             env["PATH"] = f"{mock_bin}:{env['PATH']}"
             result = subprocess.run(
@@ -320,8 +318,8 @@ class SubmissionScriptsTest(unittest.TestCase):
                     "--manifest",
                     str(manifest),
                     "--submit-clair",
-                    "--clair-model-path",
-                    str(model),
+                    "--clair-model",
+                    "unsloth/test-judge",
                 ],
                 cwd=workdir,
                 env=env,
@@ -345,7 +343,7 @@ class SubmissionScriptsTest(unittest.TestCase):
             self.assertIn("--dependency=afterok:30001:30002:30003:30004:30005:30006", calls[6])
             self.assertIn("CLAIR_FIT_JOB=11881", calls[-1])
 
-    def test_clair_submission_exports_gguf_path_and_forwards_scorer_args(self):
+    def test_clair_submission_exports_model_and_forwards_scorer_args(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)
             self._write_server_env(workdir)
@@ -354,17 +352,14 @@ class SubmissionScriptsTest(unittest.TestCase):
             shutil.copy2(REPO_ROOT / "scripts/submit_clair_job.sh", scripts_dir)
             predictions = workdir / "predictions.jsonl"
             predictions.touch()
-            model = workdir / "judge.gguf"
-            model.touch()
-
             result = subprocess.run(
                 [
                     str(scripts_dir / "submit_clair_job.sh"),
                     "--predictions",
                     str(predictions),
-                    "--model-path",
-                    str(model),
-                    "--concurrency",
+                    "--model",
+                    "unsloth/test-judge",
+                    "--batch-size",
                     "8",
                     "--limit",
                     "32",
@@ -377,8 +372,8 @@ class SubmissionScriptsTest(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn(f"CLAIR_MODEL_PATH={model}", result.stdout)
-            self.assertIn("--concurrency 8 --limit 32", result.stdout)
+            self.assertIn("CLAIR_MODEL_NAME_OR_PATH=unsloth/test-judge", result.stdout)
+            self.assertIn("--batch-size 8 --limit 32", result.stdout)
             self.assertIn("[Dry run - not submitting]", result.stdout)
 
 

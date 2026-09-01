@@ -15,8 +15,8 @@ CAPTION_WORKERS="8"
 FIT_JOB=""
 MANIFEST=""
 SUBMIT_CLAIR=false
-CLAIR_MODEL_PATH="${CLAIR_MODEL_PATH:-}"
-CLAIR_CONCURRENCY=8
+CLAIR_MODEL_NAME_OR_PATH="${CLAIR_MODEL_NAME_OR_PATH:-unsloth/Qwen3.8-27B-unsloth-bnb-4bit}"
+CLAIR_BATCH_SIZE=8
 CLAIR_MAX_NEW_TOKENS=512
 DRY_RUN=false
 
@@ -31,8 +31,8 @@ while [[ $# -gt 0 ]]; do
         --fit-job) FIT_JOB="${2:-}"; shift 2 ;;
         --manifest) MANIFEST="${2:-}"; shift 2 ;;
         --submit-clair) SUBMIT_CLAIR=true; shift ;;
-        --clair-model-path) CLAIR_MODEL_PATH="${2:-}"; shift 2 ;;
-        --clair-concurrency) CLAIR_CONCURRENCY="${2:-}"; shift 2 ;;
+        --clair-model) CLAIR_MODEL_NAME_OR_PATH="${2:-}"; shift 2 ;;
+        --clair-batch-size) CLAIR_BATCH_SIZE="${2:-}"; shift 2 ;;
         --clair-max-new-tokens) CLAIR_MAX_NEW_TOKENS="${2:-}"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
@@ -51,12 +51,12 @@ for value in "${values[@]}"; do
         exit 1
     fi
 done
-if ! [[ "$CLAIR_CONCURRENCY" =~ ^[1-9][0-9]*$ ]] || ! [[ "$CLAIR_MAX_NEW_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
-    echo "CLAIR concurrency and max-new-tokens must be positive integers."
+if ! [[ "$CLAIR_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] || ! [[ "$CLAIR_MAX_NEW_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "CLAIR batch size and max-new-tokens must be positive integers."
     exit 1
 fi
-if [ "$SUBMIT_CLAIR" = true ] && [ -z "$CLAIR_MODEL_PATH" ]; then
-    echo "--submit-clair requires --clair-model-path or CLAIR_MODEL_PATH."
+if [ "$SUBMIT_CLAIR" = true ] && [ -z "$CLAIR_MODEL_NAME_OR_PATH" ]; then
+    echo "--submit-clair requires a CLAIR model name or path."
     exit 1
 fi
 
@@ -73,10 +73,6 @@ source .env
 set +a
 if [ -z "${FINETUNING_OUTPUT_ROOT:-}" ]; then
     echo "FINETUNING_OUTPUT_ROOT is required."
-    exit 1
-fi
-if [ "$SUBMIT_CLAIR" = true ] && [ ! -f "$CLAIR_MODEL_PATH" ]; then
-    echo "CLAIR GGUF does not exist: $CLAIR_MODEL_PATH"
     exit 1
 fi
 CONDITIONS=(no_loc loc_text loc_embed loc_additive_satclip)
@@ -251,9 +247,9 @@ clair_output="$(
         "--job-name=clair-fit-${fit_id}" \
         "--partition=${SLURM_DEFAULT_PARTITION}" \
         "--dependency=${dependency}" \
-        "--export=ALL,CLAIR_MODEL_PATH=${CLAIR_MODEL_PATH},CLAIR_TRAJECTORY_MANIFEST=${manifest_absolute},CLAIR_FIT_JOB=${fit_id}" \
+        "--export=ALL,CLAIR_MODEL_NAME_OR_PATH=${CLAIR_MODEL_NAME_OR_PATH},CLAIR_TRAJECTORY_MANIFEST=${manifest_absolute},CLAIR_FIT_JOB=${fit_id}" \
         scripts/score_clair_job.sbatch \
-        --concurrency "$CLAIR_CONCURRENCY" \
+        --batch-size "$CLAIR_BATCH_SIZE" \
         --max-new-tokens "$CLAIR_MAX_NEW_TOKENS"
 )"
 printf '%s\n' "$clair_output"

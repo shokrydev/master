@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Score BigEarthNet.txt captions through a local llama.cpp CLAIR judge."""
+"""Score BigEarthNet.txt captions with a local Unsloth CLAIR judge."""
 
 from __future__ import annotations
 
 import argparse
 import json
-from concurrent.futures import ThreadPoolExecutor
+import time
+from collections.abc import Iterable, Sequence
+from importlib import metadata
 from pathlib import Path
 from typing import Any
-
-import requests
 
 from src.evaluation.bentxt_records import BENTxTPrediction, load_predictions_jsonl
 from src.evaluation.clair import (
@@ -19,144 +19,231 @@ from src.evaluation.clair import (
     summarize_clair_rows,
 )
 
+DEFAULT_JUDGE = "unsloth/Qwen3.8-27B-unsloth-bnb-4bit"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("predictions", type=Path)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--base-url", default="http://127.0.0.1:8080/v1")
-    parser.add_argument("--model-path", type=Path, required=True)
-    parser.add_argument("--judge-label", default="unsloth/Qwen3.8-27B-GGUF:UD-Q6_K")
-    parser.add_argument("--llama-version", default=None)
-    parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument(
+        "--score",
+        action="append",
+        nargs=2,
+        required=True,
+        metavar=("PREDICTIONS", "OUTPUT_DIR"),
+        help="Prediction export and its CLAIR output directory; may be repeated.",
+    )
+    parser.add_argument("--model-name-or-path", default=DEFAULT_JUDGE)
+    parser.add_argument("--judge-label", default=DEFAULT_JUDGE)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--max-sequence-length", type=int, default=4096)
     parser.add_argument("--max-new-tokens", type=int, default=512)
-    parser.add_argument("--request-timeout", type=float, default=600.0)
-    parser.add_argument("--limit", type=int, default=None, help="Pilot-only caption-row limit.")
+    parser.add_argument("--limit", type=int, default=None, help="Pilot-only per-export limit.")
     return parser.parse_args()
 
 
-def build_request_payload(
-    prompt: str,
-    *,
-    max_new_tokens: int,
-    judge_label: str,
-) -> dict[str, Any]:
-    """Build deterministic CLAIR chat-completion parameters."""
-    return {
-        "model": judge_label,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "seed": 42,
-        "max_tokens": max_new_tokens,
-        "stream": False,
-        "chat_template_kwargs": {"enable_thinking": False},
-        "reasoning_format": "none",
-    }
+def batches(values: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
 
 
-def _score_one(
-    record: BENTxTPrediction,
-    *,
-    base_url: str,
-    max_new_tokens: int,
-    judge_label: str,
-    timeout: float,
-) -> dict[str, Any]:
-    prompt = format_clair_prompt(record.prediction, record.target_texts)
-    response = requests.post(
-        f"{base_url.rstrip('/')}/chat/completions",
-        json=build_request_payload(
-            prompt,
-            max_new_tokens=max_new_tokens,
-            judge_label=judge_label,
-        ),
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    body = response.json()
-    choice = body["choices"][0]
-    message = choice["message"]
-    raw_response = message.get("content") or ""
-    parsed = parse_clair_response(raw_response)
-    return {
-        "sample_id": record.sample_id,
-        "patch_id": record.patch_id,
-        "candidate": record.prediction,
-        "references": list(record.target_texts),
-        "prompt": prompt,
-        "raw_response": raw_response,
-        "raw_reasoning_content": message.get("reasoning_content"),
-        "score": parsed.score,
-        "reason": parsed.reason,
-        "parse_method": parsed.parse_method,
-        "parse_error": parsed.error,
-        "finish_reason": choice.get("finish_reason"),
-        "usage": body.get("usage"),
-        "timings": body.get("timings"),
-    }
+def build_judge_messages(prompt: str) -> list[dict[str, str]]:
+    return [{"role": "user", "content": prompt}]
+
+
+def _package_version(name: str) -> str | None:
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
 
 
 def _write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def main() -> None:
-    args = parse_args()
-    if args.concurrency <= 0 or args.max_new_tokens <= 0 or args.request_timeout <= 0:
-        raise ValueError("concurrency, max new tokens, and timeout must be positive")
-    if not args.model_path.is_file():
-        raise ValueError(f"GGUF model does not exist: {args.model_path}")
+def _load_judge(model_name_or_path: str, max_sequence_length: int):
+    from unsloth import FastModel
 
-    records = caption_records(load_predictions_jsonl(args.predictions))
+    model, tokenizer = FastModel.from_pretrained(
+        model_name=model_name_or_path,
+        max_seq_length=max_sequence_length,
+        dtype=None,
+        load_in_4bit=True,
+    )
+    FastModel.for_inference(model)
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    return model, tokenizer
+
+
+def _generate_batch(
+    records: Sequence[BENTxTPrediction],
+    *,
+    model: Any,
+    tokenizer: Any,
+    max_sequence_length: int,
+    max_new_tokens: int,
+) -> list[dict[str, Any]]:
+    import torch
+
+    prompts = [format_clair_prompt(record.prediction, record.target_texts) for record in records]
+    rendered = [
+        tokenizer.apply_chat_template(
+            build_judge_messages(prompt),
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        for prompt in prompts
+    ]
+    inputs = tokenizer(
+        rendered,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=max_sequence_length - max_new_tokens,
+    )
+    input_device = next(model.parameters()).device
+    inputs = {name: tensor.to(input_device) for name, tensor in inputs.items()}
+    input_width = inputs["input_ids"].shape[1]
+    started = time.perf_counter()
+    with torch.inference_mode():
+        sequences = model.generate(
+            **inputs,
+            do_sample=False,
+            max_new_tokens=max_new_tokens,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+            use_cache=True,
+        )
+    elapsed = time.perf_counter() - started
+    generated = sequences[:, input_width:]
+    responses = tokenizer.batch_decode(generated, skip_special_tokens=True)
+
+    rows = []
+    for index, (record, prompt, raw_response) in enumerate(
+        zip(records, prompts, responses, strict=True)
+    ):
+        parsed = parse_clair_response(raw_response)
+        prompt_tokens = int(inputs["attention_mask"][index].sum().item())
+        completion_tokens = int(generated[index].ne(tokenizer.pad_token_id).sum().item())
+        rows.append(
+            {
+                "sample_id": record.sample_id,
+                "patch_id": record.patch_id,
+                "candidate": record.prediction,
+                "references": list(record.target_texts),
+                "prompt": prompt,
+                "raw_response": raw_response,
+                "raw_reasoning_content": None,
+                "score": parsed.score,
+                "reason": parsed.reason,
+                "parse_method": parsed.parse_method,
+                "parse_error": parsed.error,
+                "finish_reason": None,
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                },
+                "timings": {"batch_seconds": elapsed, "batch_size": len(records)},
+            }
+        )
+    return rows
+
+
+def _score_export(
+    predictions: Path,
+    output_dir: Path,
+    *,
+    model: Any,
+    tokenizer: Any,
+    args: argparse.Namespace,
+    provenance: dict[str, Any],
+) -> int:
+    records = caption_records(load_predictions_jsonl(predictions))
     if args.limit is not None:
-        if args.limit <= 0:
-            raise ValueError("limit must be positive")
         records = records[: args.limit]
     if not records:
-        raise ValueError(f"no captioning rows found in {args.predictions}")
+        raise ValueError(f"no captioning rows found in {predictions}")
 
-    def score(record: BENTxTPrediction) -> dict[str, Any]:
-        return _score_one(
-            record,
-            base_url=args.base_url,
-            max_new_tokens=args.max_new_tokens,
-            judge_label=args.judge_label,
-            timeout=args.request_timeout,
+    output_rows: list[dict[str, Any]] = []
+    for batch_index, record_batch in enumerate(batches(records, args.batch_size), start=1):
+        output_rows.extend(
+            _generate_batch(
+                record_batch,
+                model=model,
+                tokenizer=tokenizer,
+                max_sequence_length=args.max_sequence_length,
+                max_new_tokens=args.max_new_tokens,
+            )
+        )
+        print(
+            f"{predictions}: scored {len(output_rows)}/{len(records)} captions "
+            f"(batch {batch_index})",
+            flush=True,
         )
 
-    with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-        output_rows = list(executor.map(score, records))
-
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    rows_path = args.output_dir / "clair_sample_scores.jsonl"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rows_path = output_dir / "clair_sample_scores.jsonl"
     with rows_path.open("w", encoding="utf-8") as handle:
         for row in output_rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    config = {
-        "predictions": str(args.predictions.resolve()),
-        "judge_label": args.judge_label,
-        "gguf_model_path": str(args.model_path.resolve()),
-        "gguf_size_bytes": args.model_path.stat().st_size,
-        "llama_version": args.llama_version,
-        "base_url": args.base_url,
-        "concurrency": args.concurrency,
+    config = provenance | {
+        "predictions": str(predictions.resolve()),
+        "batch_size": args.batch_size,
+        "max_sequence_length": args.max_sequence_length,
         "max_new_tokens": args.max_new_tokens,
-        "request_timeout": args.request_timeout,
         "limit": args.limit,
-        "quantization": "UD-Q6_K",
-        "decoding": {
-            "temperature": 0.0,
-            "top_p": 1.0,
-            "seed": 42,
-            "enable_thinking": False,
+        "decoding": {"do_sample": False, "enable_thinking": False},
+    }
+    _write_json(output_dir / "clair_config.json", config)
+    _write_json(output_dir / "clair_summary.json", summarize_clair_rows(output_rows) | config)
+    print(f"Wrote {len(output_rows)} CLAIR scores to {output_dir}", flush=True)
+    return len(output_rows)
+
+
+def main() -> None:
+    args = parse_args()
+    if args.batch_size <= 0 or args.max_sequence_length <= 0 or args.max_new_tokens <= 0:
+        raise ValueError("batch size and token limits must be positive")
+    if args.max_new_tokens >= args.max_sequence_length:
+        raise ValueError("max new tokens must be smaller than max sequence length")
+    if args.limit is not None and args.limit <= 0:
+        raise ValueError("limit must be positive")
+
+    score_specs = [(Path(predictions), Path(output)) for predictions, output in args.score]
+    for predictions, _ in score_specs:
+        if not predictions.is_file():
+            raise ValueError(f"predictions do not exist: {predictions}")
+
+    print(f"Loading CLAIR judge once for {len(score_specs)} prediction export(s)", flush=True)
+    model, tokenizer = _load_judge(args.model_name_or_path, args.max_sequence_length)
+    model_config = getattr(model, "config", None)
+    provenance = {
+        "backend": "unsloth-transformers",
+        "judge_label": args.judge_label,
+        "model_name_or_path": args.model_name_or_path,
+        "model_commit_hash": getattr(model_config, "_commit_hash", None),
+        "quantization": "bitsandbytes NF4",
+        "package_versions": {
+            "torch": _package_version("torch"),
+            "transformers": _package_version("transformers"),
+            "unsloth": _package_version("unsloth"),
+            "unsloth_zoo": _package_version("unsloth-zoo"),
+            "bitsandbytes": _package_version("bitsandbytes"),
         },
     }
-    _write_json(args.output_dir / "clair_config.json", config)
-    _write_json(args.output_dir / "clair_summary.json", summarize_clair_rows(output_rows) | config)
-    print(f"Scored {len(output_rows)} caption rows")
-    print(f"Wrote CLAIR outputs to {args.output_dir}")
+    for predictions, output_dir in score_specs:
+        _score_export(
+            predictions,
+            output_dir,
+            model=model,
+            tokenizer=tokenizer,
+            args=args,
+            provenance=provenance,
+        )
 
 
 if __name__ == "__main__":

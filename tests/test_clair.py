@@ -1,4 +1,4 @@
-from scripts.score_bentxt_clair import build_request_payload
+from scripts.score_bentxt_clair import batches, build_judge_messages
 from src.evaluation.bentxt_records import BENTxTPrediction
 from src.evaluation.clair import (
     caption_records,
@@ -15,13 +15,9 @@ def test_format_clair_prompt_uses_published_bullet_format():
     assert 'key "score"' in prompt
 
 
-def test_llama_request_is_greedy_and_disables_hidden_reasoning():
-    payload = build_request_payload("prompt", max_new_tokens=256, judge_label="judge")
-    assert payload["model"] == "judge"
-    assert payload["temperature"] == 0.0
-    assert payload["max_tokens"] == 256
-    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
-    assert payload["reasoning_format"] == "none"
+def test_local_judge_messages_and_batching_are_stable():
+    assert build_judge_messages("prompt") == [{"role": "user", "content": "prompt"}]
+    assert list(batches([1, 2, 3, 4, 5], 2)) == [[1, 2], [3, 4], [5]]
 
 
 def test_parse_clair_response_accepts_json_after_reasoning():
