@@ -1,6 +1,6 @@
 #!/bin/bash
-# Submit only the prespecified evaluations for the corrected 2B trajectory
-# fits. The all-in-one fit+evaluation helper remains unchanged.
+# Submit prespecified evaluations for completed corrected 2B trajectory fits.
+# This helper deliberately does not submit or depend on training jobs.
 
 set -euo pipefail
 
@@ -109,33 +109,6 @@ if [ -z "$MANIFEST" ]; then
     MANIFEST="outputs/submission_manifests/2b_trajectory_fit_${FIT_JOB}_$(date +%Y%m%d_%H%M%S).tsv"
 fi
 
-FIT_DEPENDENCY="afterok:${FIT_JOB}"
-if [ "$DRY_RUN" = false ]; then
-    if ! command -v squeue >/dev/null 2>&1 || ! command -v sacct >/dev/null 2>&1; then
-        echo "squeue and sacct are required to verify fit state before submission."
-        exit 1
-    fi
-    active_state="$(squeue -h -j "$FIT_JOB" -o '%T' | awk 'NF { print $1; exit }')"
-    if [ -n "$active_state" ]; then
-        echo "Fit $FIT_JOB is $active_state; evaluations will depend on successful completion."
-    else
-        accounting_state="$(
-            sacct -X -n -P -j "$FIT_JOB" --format=JobIDRaw,State \
-                | awk -F '|' -v job="$FIT_JOB" '$1 == job { sub(/\+$/, "", $2); print $2; exit }'
-        )"
-        if [ "$accounting_state" = "COMPLETED" ]; then
-            FIT_DEPENDENCY=""
-            echo "Fit $FIT_JOB is COMPLETED; submitting evaluations without a stale dependency."
-        elif [ -z "$accounting_state" ]; then
-            echo "Could not verify fit $FIT_JOB in squeue or sacct; refusing submission."
-            exit 1
-        else
-            echo "Fit $FIT_JOB is $accounting_state, not COMPLETED; refusing submission."
-            exit 1
-        fi
-    fi
-fi
-
 adapter_dir_for_step() {
     local fit_id="$1"
     local step="$2"
@@ -146,6 +119,23 @@ adapter_dir_for_step() {
         printf '%s/qlora_adapter_steps/step_%06d' "$root" "$step"
     fi
 }
+
+if [ "$DRY_RUN" = false ]; then
+    missing_adapters=()
+    for step in "${CORRECT_STEPS[@]}"; do
+        adapter_dir="$(adapter_dir_for_step "$FIT_JOB" "$step")"
+        if [ ! -d "$adapter_dir" ]; then
+            missing_adapters+=("$adapter_dir")
+        fi
+    done
+    if [ "${#missing_adapters[@]}" -gt 0 ]; then
+        echo "Fit $FIT_JOB is not ready: required adapter directories are missing:"
+        printf '  %s\n' "${missing_adapters[@]}"
+        echo "No jobs were submitted. Run this helper only after the fit completes."
+        exit 1
+    fi
+    echo "Verified all required milestone and final adapters for completed fit $FIT_JOB."
+fi
 
 COMMON_OVERRIDES=(
     --data.init_args.evaluation_batch_sizes.short_answer "$SHORT_BATCH"
@@ -173,16 +163,11 @@ submit_evaluation() {
     shift 7
 
     local output
-    local dependency_args=()
-    if [ -n "$FIT_DEPENDENCY" ]; then
-        dependency_args=(--dependency "$FIT_DEPENDENCY")
-    fi
     output="$(
         "$SCRIPT_DIR/submit_evaluation_job.sh" \
             --condition "$condition" --size 2B \
             --adapter-dir "$adapter_dir" \
             --run-label "$run_label" \
-            "${dependency_args[@]}" \
             "$@" \
             "${COMMON_OVERRIDES[@]}"
     )"

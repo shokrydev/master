@@ -30,23 +30,6 @@ class SubmissionScriptsTest(unittest.TestCase):
         )
 
     @staticmethod
-    def _write_completed_slurm_commands(mock_bin: Path) -> None:
-        mock_squeue = mock_bin / "squeue"
-        mock_squeue.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
-        mock_squeue.chmod(0o755)
-        mock_sacct = mock_bin / "sacct"
-        mock_sacct.write_text(
-            "#!/bin/bash\n"
-            "job=''\n"
-            "while [ $# -gt 0 ]; do\n"
-            "  if [ \"$1\" = -j ]; then job=$2; shift 2; else shift; fi\n"
-            "done\n"
-            "printf '%s|COMPLETED\\n' \"$job\"\n",
-            encoding="utf-8",
-        )
-        mock_sacct.chmod(0o755)
-
-    @staticmethod
     def _write_fit_adapter_dirs(workdir: Path, fit_job: str) -> None:
         finetuning_root = workdir / "finetuning"
         with (workdir / ".env").open("a", encoding="utf-8") as handle:
@@ -322,7 +305,6 @@ class SubmissionScriptsTest(unittest.TestCase):
                 encoding="utf-8",
             )
             mock_sbatch.chmod(0o755)
-            self._write_completed_slurm_commands(mock_bin)
             self._write_fit_adapter_dirs(workdir, "11881")
             manifest = workdir / "trajectory.tsv"
             env = os.environ.copy()
@@ -391,31 +373,59 @@ class SubmissionScriptsTest(unittest.TestCase):
             ):
                 shutil.copy2(REPO_ROOT / "scripts" / name, scripts_dir / name)
 
+            mock_bin = workdir / "bin"
+            mock_bin.mkdir()
+            counter = workdir / "counter"
+            counter.write_text("50000\n", encoding="utf-8")
+            call_log = workdir / "sbatch-calls"
+            mock_sbatch = mock_bin / "sbatch"
+            mock_sbatch.write_text(
+                "#!/bin/bash\n"
+                f"counter={counter!s}\n"
+                f"call_log={call_log!s}\n"
+                'printf \'%s\\n\' "$*" >> "$call_log"\n'
+                'job=$(cat "$counter")\n'
+                'job=$((job + 1))\n'
+                'echo "$job" > "$counter"\n'
+                'echo "Submitted batch job $job"\n',
+                encoding="utf-8",
+            )
+            mock_sbatch.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{mock_bin}:{env['PATH']}"
+
             for fit_job, (condition, seed, count) in expected.items():
+                self._write_fit_adapter_dirs(workdir, fit_job)
+                manifest = workdir / f"trajectory_{fit_job}.tsv"
                 result = subprocess.run(
                     [
                         str(scripts_dir / "submit_2b_trajectory_evaluations.sh"),
                         "--fit-job",
                         fit_job,
+                        "--manifest",
+                        str(manifest),
                         "--submit-clair",
-                        "--dry-run",
                     ],
                     cwd=workdir,
+                    env=env,
                     check=False,
                     capture_output=True,
                     text=True,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.count("[Dry run - not submitting]"), count)
+                self.assertEqual(len(manifest.read_text(encoding="utf-8").splitlines()), count + 1)
                 self.assertIn(
                     f"Submitted {count} trajectory evaluation jobs for fit {fit_job} "
                     f"({condition}, seed {seed}).",
                     result.stdout,
                 )
-                self.assertIn(
-                    f"A real submission would add one CLAIR job for fit {fit_job}.",
-                    result.stdout,
-                )
+                self.assertIn(f"Submitted one CLAIR job for fit {fit_job}.", result.stdout)
+
+            calls = call_log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(calls), 34)
+            evaluation_calls = [call for call in calls if "evaluate_job.sbatch" in call]
+            self.assertEqual(len(evaluation_calls), 30)
+            self.assertTrue(all("afterok:118" not in call for call in evaluation_calls))
 
     def test_fit_level_clair_uses_syncable_job_directory(self):
         script = (REPO_ROOT / "scripts/score_clair_job.sbatch").read_text(
@@ -423,6 +433,45 @@ class SubmissionScriptsTest(unittest.TestCase):
         )
         self.assertIn('run_output="${EVALUATION_OUTPUT_ROOT%/}/clair_${SLURM_JOB_ID}"', script)
         self.assertNotIn("/clair_fit_", script)
+
+    def test_completed_fit_helper_refuses_missing_adapters_before_submission(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_server_env(workdir)
+            scripts_dir = workdir / "scripts"
+            scripts_dir.mkdir()
+            for name in (
+                "submit_2b_trajectory_evaluations.sh",
+                "submit_evaluation_job.sh",
+            ):
+                shutil.copy2(REPO_ROOT / "scripts" / name, scripts_dir / name)
+            mock_bin = workdir / "bin"
+            mock_bin.mkdir()
+            marker = workdir / "sbatch-was-called"
+            mock_sbatch = mock_bin / "sbatch"
+            mock_sbatch.write_text(
+                f"#!/bin/bash\ntouch {marker!s}\nexit 1\n",
+                encoding="utf-8",
+            )
+            mock_sbatch.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{mock_bin}:{env['PATH']}"
+            result = subprocess.run(
+                [
+                    str(scripts_dir / "submit_2b_trajectory_evaluations.sh"),
+                    "--fit-job",
+                    "11809",
+                ],
+                cwd=workdir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("required adapter directories are missing", result.stdout)
+            self.assertIn("No jobs were submitted", result.stdout)
+            self.assertFalse(marker.exists())
 
     def test_location_fit_manifest_and_clair_dependency_include_all_eight_exports(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -453,7 +502,6 @@ class SubmissionScriptsTest(unittest.TestCase):
                 encoding="utf-8",
             )
             mock_sbatch.chmod(0o755)
-            self._write_completed_slurm_commands(mock_bin)
             self._write_fit_adapter_dirs(workdir, "11809")
             manifest = workdir / "loc_embed.tsv"
             env = os.environ.copy()
