@@ -125,6 +125,8 @@ def _generate_batch(
     input_device = next(model.parameters()).device
     inputs = {name: tensor.to(input_device) for name, tensor in inputs.items()}
     input_width = inputs["input_ids"].shape[1]
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     started = time.perf_counter()
     with torch.inference_mode():
         sequences = model.generate(
@@ -135,6 +137,8 @@ def _generate_batch(
             eos_token_id=text_tokenizer.eos_token_id,
             use_cache=True,
         )
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     elapsed = time.perf_counter() - started
     generated = sequences[:, input_width:]
     responses = text_tokenizer.batch_decode(generated, skip_special_tokens=True)

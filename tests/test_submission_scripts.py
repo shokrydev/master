@@ -376,6 +376,39 @@ class SubmissionScriptsTest(unittest.TestCase):
             self.assertIn("--batch-size 8 --limit 32", result.stdout)
             self.assertIn("[Dry run - not submitting]", result.stdout)
 
+    def test_clair_batch_profile_submission_forwards_candidates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_server_env(workdir)
+            scripts_dir = workdir / "scripts"
+            scripts_dir.mkdir()
+            shutil.copy2(REPO_ROOT / "scripts/submit_clair_batch_profile_job.sh", scripts_dir)
+            predictions = workdir / "predictions.jsonl"
+            predictions.touch()
+            result = subprocess.run(
+                [
+                    str(scripts_dir / "submit_clair_batch_profile_job.sh"),
+                    "--predictions",
+                    str(predictions),
+                    "--batch-sizes",
+                    "8",
+                    "16",
+                    "24",
+                    "--profile-rows",
+                    "48",
+                    "--dry-run",
+                ],
+                cwd=workdir,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("profile_clair_batch_size.sbatch", result.stdout)
+            self.assertIn("--batch-sizes 8 16 24 --profile-rows 48", result.stdout)
+            self.assertIn("[Dry run - not submitting]", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
