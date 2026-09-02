@@ -29,6 +29,33 @@ class SubmissionScriptsTest(unittest.TestCase):
             encoding="utf-8",
         )
 
+    @staticmethod
+    def _write_completed_slurm_commands(mock_bin: Path) -> None:
+        mock_squeue = mock_bin / "squeue"
+        mock_squeue.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        mock_squeue.chmod(0o755)
+        mock_sacct = mock_bin / "sacct"
+        mock_sacct.write_text(
+            "#!/bin/bash\n"
+            "job=''\n"
+            "while [ $# -gt 0 ]; do\n"
+            "  if [ \"$1\" = -j ]; then job=$2; shift 2; else shift; fi\n"
+            "done\n"
+            "printf '%s|COMPLETED\\n' \"$job\"\n",
+            encoding="utf-8",
+        )
+        mock_sacct.chmod(0o755)
+
+    @staticmethod
+    def _write_fit_adapter_dirs(workdir: Path, fit_job: str) -> None:
+        finetuning_root = workdir / "finetuning"
+        with (workdir / ".env").open("a", encoding="utf-8") as handle:
+            handle.write(f"FINETUNING_OUTPUT_ROOT={finetuning_root}\n")
+        run_root = finetuning_root / f"bigearthnet_{fit_job}"
+        (run_root / "qlora_adapter").mkdir(parents=True)
+        for step in (50, 100, 500, 1000, 5000):
+            (run_root / "qlora_adapter_steps" / f"step_{step:06d}").mkdir(parents=True)
+
     def test_early_pipeline_submits_correct_and_shuffled_evaluations(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)
@@ -295,6 +322,8 @@ class SubmissionScriptsTest(unittest.TestCase):
                 encoding="utf-8",
             )
             mock_sbatch.chmod(0o755)
+            self._write_completed_slurm_commands(mock_bin)
+            self._write_fit_adapter_dirs(workdir, "11881")
             manifest = workdir / "trajectory.tsv"
             env = os.environ.copy()
             env["PATH"] = f"{mock_bin}:{env['PATH']}"
@@ -424,6 +453,8 @@ class SubmissionScriptsTest(unittest.TestCase):
                 encoding="utf-8",
             )
             mock_sbatch.chmod(0o755)
+            self._write_completed_slurm_commands(mock_bin)
+            self._write_fit_adapter_dirs(workdir, "11809")
             manifest = workdir / "loc_embed.tsv"
             env = os.environ.copy()
             env["PATH"] = f"{mock_bin}:{env['PATH']}"
