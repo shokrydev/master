@@ -22,7 +22,6 @@ configs/finetuning/
   bigearthnet_txt_smoke.yaml    # short-run validation override
   loc_text.yaml                 # text-token location conditioning
   loc_embed.yaml                # SatCLIP-token location conditioning
-  gaia_finetuning_shared.yaml   # optional GAIA configuration
 
 configs/evaluation/
   bigearthnet_txt.yaml          # BEN.txt benchmark prediction export config
@@ -37,7 +36,6 @@ scripts/
 
 src/data_modules/
   ben_txt_datamodule.py         # BigEarthNet.txt loader
-  gaia_datamodule.py            # GAIA loader
   geo_aware_collator.py         # shared Qwen/geo/non-RGB collation
 
 src/lightning_modules/
@@ -82,10 +80,14 @@ BIGEARTHNET_TXT_PARQUET_PATH=/absolute/path/to/BigEarthNet.txt.parquet
 BIGEARTHNET_ENCODER_DIR=/absolute/path/to/mobilevit_s-all-v0.2.0/
 # File path to the SatCLIP checkpoint.
 SATCLIP_CHECKPOINT_PATH=/absolute/path/to/satclip-vit16-l10.ckpt
+# SatCLIP L=40 checkpoint used by the selected loc_embed/additive conditions.
+SATCLIP_L40_CHECKPOINT_PATH=/absolute/path/to/satclip-vit16-l40.ckpt
 # Hugging Face cache root directory.
 HF_HOME=${HOME}/.cache/huggingface/
 # Directory under which Slurm run directories are created.
 FINETUNING_OUTPUT_ROOT=/absolute/path/to/finetuning_outputs/
+# Directory under which benchmark-evaluation directories are created.
+EVALUATION_OUTPUT_ROOT=/absolute/path/to/evaluation_outputs/
 # Stable Slurm partition default for this machine. Override per run when needed.
 SLURM_DEFAULT_PARTITION=big_job
 ```
@@ -125,6 +127,12 @@ To prefetch all Qwen model sizes:
 
 ```bash
 uv run python scripts/download_artifacts.py --all
+```
+
+Download the optional SatCLIP L=40 ablation checkpoint separately:
+
+```bash
+uv run python scripts/download_artifacts.py --satclip-l40
 ```
 
 The BigEarthNet MobileViT wrapper loads `config.json` and
@@ -207,6 +215,16 @@ Final BigEarthNet.txt evaluation is split into GPU prediction export and
 offline benchmark scoring. The Slurm evaluation job uses `main.py test` to load
 the trained adapter, write `predictions.jsonl` on the `bench` split, and run
 the offline scorer to produce metric tables:
+
+```bash
+./scripts/submit_evaluation_job.sh \
+  --condition loc_embed \
+  --size 2B \
+  --adapter-dir /absolute/path/to/qlora_adapter \
+  --dry-run
+```
+
+The job runs the equivalent offline scoring command after prediction export:
 
 ```bash
 python -m src.evaluation.main score \
