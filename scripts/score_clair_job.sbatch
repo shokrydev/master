@@ -19,6 +19,7 @@ set -a
 # shellcheck disable=SC1091
 source .env
 set +a
+export PYTHONPATH="$SLURM_SUBMIT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 CLAIR_MODEL_NAME_OR_PATH="${CLAIR_MODEL_NAME_OR_PATH:-unsloth/Qwen3.8-27B-unsloth-bnb-4bit}"
 if [ -z "${EVALUATION_OUTPUT_ROOT:-}" ]; then
@@ -26,7 +27,17 @@ if [ -z "${EVALUATION_OUTPUT_ROOT:-}" ]; then
     exit 1
 fi
 
-uv run python -c \
+if [ -n "${CLAIR_PYTHON:-}" ]; then
+    if [ ! -x "$CLAIR_PYTHON" ]; then
+        echo "CLAIR_PYTHON is not executable: $CLAIR_PYTHON"
+        exit 1
+    fi
+    python_cmd=("$CLAIR_PYTHON")
+else
+    python_cmd=(uv run python)
+fi
+
+"${python_cmd[@]}" -c \
     'import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'
 
 scorer_args=(
@@ -89,7 +100,9 @@ else
 fi
 
 echo "Judge model: $CLAIR_MODEL_NAME_OR_PATH"
-printf 'Scorer command: uv run python scripts/score_bentxt_clair.py'
+printf 'Scorer command:'
+printf ' %q' "${python_cmd[@]}"
+printf ' scripts/score_bentxt_clair.py'
 printf ' %q' "${scorer_args[@]}"
 printf '\n'
-uv run python scripts/score_bentxt_clair.py "${scorer_args[@]}"
+"${python_cmd[@]}" scripts/score_bentxt_clair.py "${scorer_args[@]}"
