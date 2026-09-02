@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--model-name-or-path", default=DEFAULT_JUDGE)
     parser.add_argument("--judge-label", default=DEFAULT_JUDGE)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--max-sequence-length", type=int, default=4096)
     parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--limit", type=int, default=None, help="Pilot-only per-export limit.")

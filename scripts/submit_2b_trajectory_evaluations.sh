@@ -16,7 +16,7 @@ FIT_JOB=""
 MANIFEST=""
 SUBMIT_CLAIR=false
 CLAIR_MODEL_NAME_OR_PATH="${CLAIR_MODEL_NAME_OR_PATH:-unsloth/Qwen3.8-27B-unsloth-bnb-4bit}"
-CLAIR_BATCH_SIZE=8
+CLAIR_BATCH_SIZE=64
 CLAIR_MAX_NEW_TOKENS=512
 DRY_RUN=false
 
@@ -213,7 +213,7 @@ if [ "$SUBMIT_CLAIR" = false ]; then
 fi
 if [ "$DRY_RUN" = true ]; then
     echo "[Dry run] A real submission would add one CLAIR job for fit $fit_id."
-    echo "It would depend on this fit's $expected_count evaluation jobs and load the Q6 judge once."
+    echo "It would depend on this fit's $expected_count evaluation jobs and load the judge once."
     exit 0
 fi
 
