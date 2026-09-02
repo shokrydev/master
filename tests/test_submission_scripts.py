@@ -342,6 +342,116 @@ class SubmissionScriptsTest(unittest.TestCase):
             self.assertEqual(len(calls), 7)
             self.assertIn("--dependency=afterok:30001:30002:30003:30004:30005:30006", calls[6])
             self.assertIn("CLAIR_FIT_JOB=11881", calls[-1])
+            self.assertIn("--batch-size 64 --max-new-tokens 512", calls[-1])
+
+    def test_completed_fit_mappings_submit_expected_evaluation_counts(self):
+        expected = {
+            "11809": ("loc_embed", "42", 8),
+            "11810": ("loc_additive_satclip", "42", 8),
+            "11811": ("no_loc", "43", 6),
+            "11812": ("loc_text", "43", 8),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_server_env(workdir)
+            scripts_dir = workdir / "scripts"
+            scripts_dir.mkdir()
+            for name in (
+                "submit_2b_trajectory_evaluations.sh",
+                "submit_evaluation_job.sh",
+            ):
+                shutil.copy2(REPO_ROOT / "scripts" / name, scripts_dir / name)
+
+            for fit_job, (condition, seed, count) in expected.items():
+                result = subprocess.run(
+                    [
+                        str(scripts_dir / "submit_2b_trajectory_evaluations.sh"),
+                        "--fit-job",
+                        fit_job,
+                        "--submit-clair",
+                        "--dry-run",
+                    ],
+                    cwd=workdir,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.count("[Dry run - not submitting]"), count)
+                self.assertIn(
+                    f"Submitted {count} trajectory evaluation jobs for fit {fit_job} "
+                    f"({condition}, seed {seed}).",
+                    result.stdout,
+                )
+                self.assertIn(
+                    f"A real submission would add one CLAIR job for fit {fit_job}.",
+                    result.stdout,
+                )
+
+    def test_fit_level_clair_uses_syncable_job_directory(self):
+        script = (REPO_ROOT / "scripts/score_clair_job.sbatch").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('run_output="${EVALUATION_OUTPUT_ROOT%/}/clair_${SLURM_JOB_ID}"', script)
+        self.assertNotIn("/clair_fit_", script)
+
+    def test_location_fit_manifest_and_clair_dependency_include_all_eight_exports(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_server_env(workdir)
+            scripts_dir = workdir / "scripts"
+            scripts_dir.mkdir()
+            for name in (
+                "submit_2b_trajectory_evaluations.sh",
+                "submit_evaluation_job.sh",
+            ):
+                shutil.copy2(REPO_ROOT / "scripts" / name, scripts_dir / name)
+            mock_bin = workdir / "bin"
+            mock_bin.mkdir()
+            counter = workdir / "counter"
+            counter.write_text("40000\n", encoding="utf-8")
+            call_log = workdir / "sbatch-calls"
+            mock_sbatch = mock_bin / "sbatch"
+            mock_sbatch.write_text(
+                "#!/bin/bash\n"
+                f"counter={counter!s}\n"
+                f"call_log={call_log!s}\n"
+                'printf \'%s\\n\' "$*" >> "$call_log"\n'
+                'job=$(cat "$counter")\n'
+                'job=$((job + 1))\n'
+                'echo "$job" > "$counter"\n'
+                'echo "Submitted batch job $job"\n',
+                encoding="utf-8",
+            )
+            mock_sbatch.chmod(0o755)
+            manifest = workdir / "loc_embed.tsv"
+            env = os.environ.copy()
+            env["PATH"] = f"{mock_bin}:{env['PATH']}"
+            result = subprocess.run(
+                [
+                    str(scripts_dir / "submit_2b_trajectory_evaluations.sh"),
+                    "--fit-job",
+                    "11809",
+                    "--manifest",
+                    str(manifest),
+                    "--submit-clair",
+                ],
+                cwd=workdir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rows = manifest.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(rows), 9)
+            self.assertEqual(sum("\tshuffled\t" in row for row in rows), 2)
+            calls = call_log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(calls), 9)
+            self.assertIn(
+                "--dependency=afterok:40001:40002:40003:40004:40005:40006:40007:40008",
+                calls[-1],
+            )
 
     def test_clair_submission_exports_model_and_forwards_scorer_args(self):
         with tempfile.TemporaryDirectory() as tmpdir:

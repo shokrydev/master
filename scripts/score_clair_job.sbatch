@@ -63,8 +63,10 @@ if [ -n "${CLAIR_TRAJECTORY_MANIFEST:-}" ] || [ -n "${CLAIR_FIT_JOB:-}" ]; then
         echo "Trajectory manifest is unavailable: $CLAIR_TRAJECTORY_MANIFEST"
         exit 1
     fi
-    run_output="${EVALUATION_OUTPUT_ROOT%/}/clair_fit_${CLAIR_FIT_JOB}_${SLURM_JOB_ID}"
+    run_output="${EVALUATION_OUTPUT_ROOT%/}/clair_${SLURM_JOB_ID}"
     mkdir -p "$run_output"
+    printf '%s\n' "$CLAIR_FIT_JOB" > "$run_output/fit_job.txt"
+    printf '%s\n' "$CLAIR_TRAJECTORY_MANIFEST" > "$run_output/trajectory_manifest.txt"
     scored_count=0
     while IFS=$'\t' read -r evaluation_job fit_job condition seed step coordinate_setting adapter_dir run_label; do
         if [ "$evaluation_job" = evaluation_job ] || [ "$fit_job" != "$CLAIR_FIT_JOB" ]; then
