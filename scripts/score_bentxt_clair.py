@@ -50,6 +50,22 @@ def build_judge_messages(prompt: str) -> list[dict[str, str]]:
     return [{"role": "user", "content": prompt}]
 
 
+def tokenize_rendered_prompts(
+    processor: Any,
+    rendered: Sequence[str],
+    *,
+    max_input_length: int,
+) -> Any:
+    """Tokenize text explicitly so multimodal processors do not treat it as images."""
+    return processor(
+        text=rendered,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=max_input_length,
+    )
+
+
 def _package_version(name: str) -> str | None:
     try:
         return metadata.version(name)
@@ -64,6 +80,7 @@ def _write_json(path: Path, value: Any) -> None:
 def _load_judge(model_name_or_path: str, max_sequence_length: int):
     from unsloth import FastModel
 
+    started = time.perf_counter()
     model, tokenizer = FastModel.from_pretrained(
         model_name=model_name_or_path,
         max_seq_length=max_sequence_length,
@@ -74,6 +91,7 @@ def _load_judge(model_name_or_path: str, max_sequence_length: int):
     tokenizer.padding_side = "left"
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
+    print(f"Loaded and prepared CLAIR judge in {time.perf_counter() - started:.1f}s", flush=True)
     return model, tokenizer
 
 
@@ -97,12 +115,10 @@ def _generate_batch(
         )
         for prompt in prompts
     ]
-    inputs = tokenizer(
+    inputs = tokenize_rendered_prompts(
+        tokenizer,
         rendered,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=max_sequence_length - max_new_tokens,
+        max_input_length=max_sequence_length - max_new_tokens,
     )
     input_device = next(model.parameters()).device
     inputs = {name: tensor.to(input_device) for name, tensor in inputs.items()}

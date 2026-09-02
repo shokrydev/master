@@ -1,4 +1,8 @@
-from scripts.score_bentxt_clair import batches, build_judge_messages
+from scripts.score_bentxt_clair import (
+    batches,
+    build_judge_messages,
+    tokenize_rendered_prompts,
+)
 from src.evaluation.bentxt_records import BENTxTPrediction
 from src.evaluation.clair import (
     caption_records,
@@ -18,6 +22,35 @@ def test_format_clair_prompt_uses_published_bullet_format():
 def test_local_judge_messages_and_batching_are_stable():
     assert build_judge_messages("prompt") == [{"role": "user", "content": "prompt"}]
     assert list(batches([1, 2, 3, 4, 5], 2)) == [[1, 2], [3, 4], [5]]
+
+
+def test_multimodal_processor_receives_prompts_as_text():
+    class RecordingProcessor:
+        def __init__(self):
+            self.args = None
+            self.kwargs = None
+
+        def __call__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            return {"input_ids": "tokens"}
+
+    processor = RecordingProcessor()
+    result = tokenize_rendered_prompts(
+        processor,
+        ["first prompt", "second prompt"],
+        max_input_length=3584,
+    )
+
+    assert processor.args == ()
+    assert processor.kwargs == {
+        "text": ["first prompt", "second prompt"],
+        "return_tensors": "pt",
+        "padding": True,
+        "truncation": True,
+        "max_length": 3584,
+    }
+    assert result == {"input_ids": "tokens"}
 
 
 def test_parse_clair_response_accepts_json_after_reasoning():
