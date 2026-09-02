@@ -275,6 +275,95 @@ class SubmissionScriptsTest(unittest.TestCase):
             self.assertIn("evaluation_num_workers_by_bucket.short_answer 8", result.stdout)
             self.assertNotIn("submit_finetuning_job", result.stdout)
 
+    def test_after_marker_ablation_submits_two_fits_and_complete_dependent_workflow(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_server_env(workdir)
+            scripts_dir = workdir / "scripts"
+            scripts_dir.mkdir()
+            for name in (
+                "submit_loc_embed_after_marker_ablation.sh",
+                "submit_finetuning_job.sh",
+                "submit_2b_trajectory_evaluations.sh",
+                "submit_evaluation_job.sh",
+            ):
+                shutil.copy2(REPO_ROOT / "scripts" / name, scripts_dir / name)
+            config_dir = workdir / "configs/finetuning/ablations"
+            config_dir.mkdir(parents=True)
+            shutil.copy2(
+                REPO_ROOT / "configs/finetuning/ablations/loc_embed_after_marker.yaml",
+                config_dir / "loc_embed_after_marker.yaml",
+            )
+
+            mock_bin = workdir / "bin"
+            mock_bin.mkdir()
+            counter = workdir / "counter"
+            counter.write_text("60000\n", encoding="utf-8")
+            call_log = workdir / "sbatch-calls"
+            mock_sbatch = mock_bin / "sbatch"
+            mock_sbatch.write_text(
+                "#!/bin/bash\n"
+                f"counter={counter!s}\n"
+                f"call_log={call_log!s}\n"
+                'printf \'%s\\n\' "$*" >> "$call_log"\n'
+                'job=$(cat "$counter")\n'
+                'job=$((job + 1))\n'
+                'echo "$job" > "$counter"\n'
+                'if [ "${1:-}" = "--parsable" ]; then\n'
+                '    echo "$job"\n'
+                "else\n"
+                '    echo "Submitted batch job $job"\n'
+                "fi\n",
+                encoding="utf-8",
+            )
+            mock_sbatch.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{mock_bin}:{env['PATH']}"
+
+            result = subprocess.run(
+                [str(scripts_dir / "submit_loc_embed_after_marker_ablation.sh")],
+                cwd=workdir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = call_log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(calls), 20)
+            self.assertTrue(all("finetune_job.sbatch" in call for call in calls[:2]))
+            self.assertIn("--seed_everything 42", calls[0])
+            self.assertIn("--seed_everything 43", calls[1])
+            configured_calls = calls[:10] + calls[11:19]
+            self.assertTrue(
+                all("loc_embed_after_marker.yaml" in call for call in configured_calls)
+            )
+            seed42_evaluations = calls[2:10]
+            seed43_evaluations = calls[11:19]
+            self.assertTrue(
+                all("--dependency=afterok:60001" in call for call in seed42_evaluations)
+            )
+            self.assertTrue(
+                all("--dependency=afterok:60002" in call for call in seed43_evaluations)
+            )
+            self.assertIn(
+                "--dependency=afterok:60003:60004:60005:60006:60007:60008:60009:60010",
+                calls[10],
+            )
+            self.assertIn(
+                "--dependency=afterok:60012:60013:60014:60015:60016:60017:60018:60019",
+                calls[19],
+            )
+            self.assertEqual(
+                sum("--data.init_args.coordinate_perturbation shuffled" in call for call in calls),
+                4,
+            )
+            self.assertIn(
+                "Submitted 2 fits, 16 dependent evaluations and 2 dependent fit-level CLAIR jobs.",
+                result.stdout,
+            )
+
     def test_existing_fit_trajectory_helper_writes_job_manifest(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)

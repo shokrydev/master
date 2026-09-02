@@ -111,6 +111,8 @@ def _build_encoder_test_module(num_location_tokens: int = 2):
     module.loc_mode = "loc_embed"
     module.non_rgb_conditioning = "disabled"
     module.num_location_tokens = num_location_tokens
+    module.location_embed_marker = "Scene coordinates:"
+    module.location_token_placement = "before_vision_start"
     module.device = torch.device("cpu")
     module._location_insertion_state = None
     module._non_rgb_insertion_state = None
@@ -486,7 +488,7 @@ class InsertTokenHelpersTest(unittest.TestCase):
         module._non_rgb_insertion_state = {
             "tensor": torch.ones(1, 12, 2, 2),
             "bands": None,
-            "insert_positions": torch.tensor([1]),
+            "insert_positions": torch.tensor([2]),
         }
         module._location_insertion_state = {
             "lat": torch.tensor([1.0], dtype=torch.float64),
@@ -572,6 +574,98 @@ class InsertTokenHelpersTest(unittest.TestCase):
 
 
 class PrepareModelInputsTest(unittest.TestCase):
+    def test_after_marker_placement_keeps_s1s2_at_visual_boundary(self):
+        module = _build_encoder_test_module(num_location_tokens=2)
+        module.location_token_placement = "after_location_marker"
+        module.non_rgb_conditioning = "enabled"
+        module.num_non_rgb_tokens = 2
+        module.tokenizer = types.SimpleNamespace(
+            pad_token_id=0,
+            encode=lambda text, add_special_tokens=False: {
+                "<|im_start|>assistant\n": [644, 700, 701, 702],
+                "<|im_end|>": [645],
+                "Scene coordinates:": [200, 300],
+            }[text],
+        )
+        imagery = torch.ones(1, 12, 2, 2)
+        batch = {
+            "input_ids": torch.tensor(
+                [[10, 645, 644, 100, 997, 999, 200, 300, 645, 644, 700, 701, 702, 400]]
+            ),
+            "attention_mask": torch.ones(1, 14, dtype=torch.long),
+            "mm_token_type_ids": torch.tensor(
+                [[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]]
+            ),
+            "labels": torch.tensor(
+                [[-100] * 13 + [400]]
+            ),
+            "lat": torch.tensor([48.0], dtype=torch.float64),
+            "lon": torch.tensor([12.0], dtype=torch.float64),
+            "non_rgb_imagery": imagery,
+            "non_rgb_bands": ["VV", "VH"],
+        }
+
+        model_batch, _, _, _, _, _ = module._prepare_model_inputs(batch)
+
+        self.assertTrue(
+            torch.equal(
+                model_batch["input_ids"],
+                torch.tensor(
+                    [[10, 645, 644, 100, 0, 0, 997, 999, 200, 300, 0, 0, 645, 644, 700, 701, 702, 400]]
+                ),
+            )
+        )
+        self.assertEqual(
+            module._non_rgb_insertion_state["insert_positions"].tolist(),
+            [4],
+        )
+        self.assertEqual(
+            module._location_insertion_state["insert_positions"].tolist(),
+            [10],
+        )
+        self.assertTrue(model_batch["labels"][0, 4:6].eq(-100).all())
+        self.assertTrue(model_batch["labels"][0, 10:12].eq(-100).all())
+        self.assertTrue(model_batch["attention_mask"][0, 4:6].eq(1).all())
+        self.assertTrue(model_batch["attention_mask"][0, 10:12].eq(1).all())
+        self.assertTrue(model_batch["mm_token_type_ids"][0, 4:6].eq(0).all())
+        self.assertTrue(model_batch["mm_token_type_ids"][0, 10:12].eq(0).all())
+
+        module.non_rgb_encoder = _EvalCallable(
+            lambda tensor, bands: torch.zeros(1, 1, 5)
+        )
+        module.non_rgb_modality_projection = lambda features: torch.tensor(
+            [[[80.0], [81.0]]]
+        )
+        module.satclip = _EvalCallable(lambda coords: torch.zeros(1, 3))
+        module.location_modality_projection = lambda features: torch.tensor(
+            [[[90.0], [91.0]]]
+        )
+        kwargs = {"inputs_embeds": model_batch["input_ids"].float().unsqueeze(-1)}
+        module._decoder_input_conditioning_hook(None, (), kwargs)
+        self.assertEqual(kwargs["inputs_embeds"][0, 4:6, 0].tolist(), [80.0, 81.0])
+        self.assertEqual(kwargs["inputs_embeds"][0, 10:12, 0].tolist(), [90.0, 91.0])
+
+    def test_after_marker_placement_requires_qwen_chat_boundaries(self):
+        module = _build_encoder_test_module(num_location_tokens=2)
+        module.location_token_placement = "after_location_marker"
+        module.tokenizer = types.SimpleNamespace(
+            pad_token_id=0,
+            encode=lambda text, add_special_tokens=False: {
+                "<|im_start|>assistant\n": [644, 700],
+                "<|im_end|>": [645],
+                "Scene coordinates:": [200, 300],
+            }[text],
+        )
+        batch = {
+            "input_ids": torch.tensor([[10, 997, 999, 200]]),
+            "attention_mask": torch.ones(1, 4, dtype=torch.long),
+            "lat": torch.tensor([48.0], dtype=torch.float64),
+            "lon": torch.tensor([12.0], dtype=torch.float64),
+        }
+
+        with self.assertRaisesRegex(ValueError, "assistant header"):
+            module._prepare_model_inputs(batch)
+
     def test_prepare_and_replace_keep_native_visual_boundary_aligned(self):
         module = _build_encoder_test_module(num_location_tokens=2)
         batch = {
@@ -928,6 +1022,27 @@ class AdapterArtifactSetupTest(unittest.TestCase):
     def test_location_embed_marker_requires_loc_embed_mode(self):
         with self.assertRaisesRegex(ValueError, "loc_mode='loc_embed'"):
             Qwen3VLModule(location_embed_marker="Scene coordinates:")
+
+    def test_after_marker_location_placement_requires_loc_embed_mode(self):
+        with self.assertRaisesRegex(ValueError, "only configurable"):
+            Qwen3VLModule(location_token_placement="after_location_marker")
+
+    def test_invalid_location_token_placement_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "location_token_placement"):
+            Qwen3VLModule(
+                loc_mode="loc_embed",
+                location_embed_marker="Scene coordinates:",
+                location_token_placement="after_instruction",
+            )
+
+    def test_after_marker_location_placement_is_accepted_for_loc_embed(self):
+        module = Qwen3VLModule(
+            loc_mode="loc_embed",
+            location_embed_marker="Scene coordinates:",
+            location_token_placement="after_location_marker",
+        )
+
+        self.assertEqual(module.location_token_placement, "after_location_marker")
 
     def test_compact_location_projection_requires_loc_embed_mode(self):
         with self.assertRaisesRegex(ValueError, "only configurable"):

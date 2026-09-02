@@ -1,6 +1,5 @@
 #!/bin/bash
-# Submit prespecified evaluations for completed corrected 2B trajectory fits.
-# This helper deliberately does not submit or depend on training jobs.
+# Submit the complete corrected 2B evaluation trajectory for one fit.
 
 set -euo pipefail
 
@@ -13,7 +12,12 @@ SHORT_WORKERS="8"
 BBOX_WORKERS="8"
 CAPTION_WORKERS="8"
 FIT_JOB=""
+CONDITION=""
+SEED=""
+DEPENDENCY=""
+RUN_PREFIX=""
 MANIFEST=""
+EVALUATION_CONFIGS=()
 SUBMIT_CLAIR=false
 CLAIR_MODEL_NAME_OR_PATH="${CLAIR_MODEL_NAME_OR_PATH:-unsloth/Qwen3.8-27B-unsloth-bnb-4bit}"
 CLAIR_BATCH_SIZE=64
@@ -29,6 +33,11 @@ while [[ $# -gt 0 ]]; do
         --bbox-workers) BBOX_WORKERS="${2:-}"; shift 2 ;;
         --caption-workers) CAPTION_WORKERS="${2:-}"; shift 2 ;;
         --fit-job) FIT_JOB="${2:-}"; shift 2 ;;
+        --condition) CONDITION="${2:-}"; shift 2 ;;
+        --seed) SEED="${2:-}"; shift 2 ;;
+        --dependency) DEPENDENCY="${2:-}"; shift 2 ;;
+        --run-prefix) RUN_PREFIX="${2:-}"; shift 2 ;;
+        --config) EVALUATION_CONFIGS+=("${2:-}"); shift 2 ;;
         --manifest) MANIFEST="${2:-}"; shift 2 ;;
         --submit-clair) SUBMIT_CLAIR=true; shift ;;
         --clair-model) CLAIR_MODEL_NAME_OR_PATH="${2:-}"; shift 2 ;;
@@ -100,11 +109,36 @@ for seed in "${SEEDS[@]}"; do
         fi
     done
 done
-if [ -z "$SELECTED_SEED" ]; then
+if [ -n "$SELECTED_SEED" ]; then
+    if [ -n "$SEED" ] && [ "$SEED" != "$SELECTED_SEED" ]; then
+        echo "--seed $SEED conflicts with registered fit $FIT_JOB seed $SELECTED_SEED."
+        exit 1
+    fi
+    if [ -n "$CONDITION" ] && [ "$CONDITION" != "$SELECTED_CONDITION" ]; then
+        echo "--condition $CONDITION conflicts with registered fit $FIT_JOB condition $SELECTED_CONDITION."
+        exit 1
+    fi
+    SEED="$SELECTED_SEED"
+    CONDITION="$SELECTED_CONDITION"
+elif [ -z "$SEED" ] || [ -z "$CONDITION" ]; then
     echo "Unknown corrected 2B fit job: $FIT_JOB"
-    echo "Expected one of: 11809 11810 11811 11812 11813 11814 11881 11882"
+    echo "For a new fit, provide both --condition and --seed explicitly."
     exit 1
 fi
+case "$CONDITION" in
+    no_loc|loc_text|loc_embed|loc_additive_satclip) ;;
+    *) echo "Unsupported trajectory condition: $CONDITION"; exit 1 ;;
+esac
+if ! [[ "$SEED" =~ ^[0-9]+$ ]]; then
+    echo "--seed must be a non-negative integer."
+    exit 1
+fi
+for config in "${EVALUATION_CONFIGS[@]}"; do
+    if [ -z "$config" ] || [ ! -f "$config" ]; then
+        echo "Evaluation config is not a file: $config"
+        exit 1
+    fi
+done
 if [ -z "$MANIFEST" ]; then
     MANIFEST="outputs/submission_manifests/2b_trajectory_fit_${FIT_JOB}_$(date +%Y%m%d_%H%M%S).tsv"
 fi
@@ -120,7 +154,7 @@ adapter_dir_for_step() {
     fi
 }
 
-if [ "$DRY_RUN" = false ]; then
+if [ "$DRY_RUN" = false ] && [ -z "$DEPENDENCY" ]; then
     missing_adapters=()
     for step in "${CORRECT_STEPS[@]}"; do
         adapter_dir="$(adapter_dir_for_step "$FIT_JOB" "$step")"
@@ -135,6 +169,8 @@ if [ "$DRY_RUN" = false ]; then
         exit 1
     fi
     echo "Verified all required milestone and final adapters for completed fit $FIT_JOB."
+elif [ -n "$DEPENDENCY" ]; then
+    echo "Adapter checks deferred until Slurm dependency $DEPENDENCY is satisfied."
 fi
 
 COMMON_OVERRIDES=(
@@ -145,6 +181,12 @@ COMMON_OVERRIDES=(
     --data.init_args.evaluation_num_workers_by_bucket.bounding_box "$BBOX_WORKERS"
     --data.init_args.evaluation_num_workers_by_bucket.captioning "$CAPTION_WORKERS"
 )
+for config in "${EVALUATION_CONFIGS[@]}"; do
+    COMMON_OVERRIDES+=(--config "$config")
+done
+if [ -n "$DEPENDENCY" ]; then
+    COMMON_OVERRIDES+=(--dependency "$DEPENDENCY")
+fi
 if [ "$DRY_RUN" = true ]; then
     COMMON_OVERRIDES+=(--dry-run)
 else
@@ -192,9 +234,9 @@ submit_evaluation() {
 }
 
 fit_id="$FIT_JOB"
-seed="$SELECTED_SEED"
-condition="$SELECTED_CONDITION"
-prefix="qwen3-json-${condition}-2B-full-seed${seed}"
+seed="$SEED"
+condition="$CONDITION"
+prefix="${RUN_PREFIX:-qwen3-json-${condition}-2B-full-seed${seed}}"
 for step in "${CORRECT_STEPS[@]}"; do
     adapter_dir="$(adapter_dir_for_step "$fit_id" "$step")"
     run_label="${prefix}-step${step}-j${fit_id}"
@@ -219,7 +261,11 @@ expected_count=8
 if [ "$condition" = no_loc ]; then
     expected_count=6
 fi
-echo "Submitted $expected_count trajectory evaluation jobs for fit $fit_id ($condition, seed $seed)."
+if [ "$DRY_RUN" = true ]; then
+    echo "[Dry run] Would submit $expected_count trajectory evaluation jobs for fit $fit_id ($condition, seed $seed)."
+else
+    echo "Submitted $expected_count trajectory evaluation jobs for fit $fit_id ($condition, seed $seed)."
+fi
 if [ "$DRY_RUN" = false ]; then
     echo "Wrote submission manifest: $MANIFEST"
 fi

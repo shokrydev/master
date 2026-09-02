@@ -1,0 +1,5 @@
+# Placement ablation for loc_embed. The core loc_embed config remains unchanged.
+
+model:
+  init_args:
+    location_token_placement: after_location_marker

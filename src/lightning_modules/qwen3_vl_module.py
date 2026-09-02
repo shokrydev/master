@@ -78,6 +78,9 @@ class Qwen3VLModule(L.LightningModule):
         location_text_template: str | None = None,
         coordinates_decimal_places: int = 0,
         location_embed_marker: str | None = None,
+        location_token_placement: Literal[
+            "before_vision_start", "after_location_marker"
+        ] = "before_vision_start",
         location_encoding_scope: Literal["all_visual", "s1s2"] | None = None,
         location_encoding_projection: Literal["none", "linear"] = "none",
         location_encoding_feature_dim: int = 256,
@@ -139,6 +142,10 @@ class Qwen3VLModule(L.LightningModule):
                 `{location}` field in `location_text_template`.
             location_embed_marker: Text marker appended to the prompt before
                 projected SatCLIP tokens when `loc_mode="loc_embed"`.
+            location_token_placement: Position of projected SatCLIP location
+                tokens. The core protocol inserts them before Qwen's visual
+                block; the placement ablation inserts them after the final
+                location marker in the user message.
             location_encoding_scope: Existing embeddings that receive direct
                 scene-coordinate encoding for additive location modes.
             location_encoding_projection: Whether direct `loc_encoding` uses
@@ -201,6 +208,19 @@ class Qwen3VLModule(L.LightningModule):
             raise ValueError("loc_mode='loc_embed' requires location_embed_marker")
         if loc_mode != "loc_embed" and location_embed_marker is not None:
             raise ValueError("location_embed_marker is only used when loc_mode='loc_embed'")
+        if location_token_placement not in {
+            "before_vision_start",
+            "after_location_marker",
+        }:
+            raise ValueError(
+                "location_token_placement must be 'before_vision_start' or "
+                "'after_location_marker'"
+            )
+        if loc_mode != "loc_embed" and location_token_placement != "before_vision_start":
+            raise ValueError(
+                "location_token_placement is only configurable when "
+                "loc_mode='loc_embed'"
+            )
         if location_projection_architecture not in {"mlp", "linear"}:
             raise ValueError(
                 "location_projection_architecture must be 'mlp' or 'linear'"
@@ -351,6 +371,7 @@ class Qwen3VLModule(L.LightningModule):
         self.location_text_template = location_text_template
         self.coordinates_decimal_places = coordinates_decimal_places
         self.location_embed_marker = location_embed_marker
+        self.location_token_placement = location_token_placement
         self.location_encoding_scope = location_encoding_scope
         self.location_encoding_projection = location_encoding_projection
         self.location_encoding_feature_dim = location_encoding_feature_dim
@@ -675,7 +696,11 @@ class Qwen3VLModule(L.LightningModule):
                 "satclip": metadata,
                 "coordinate_order": ["longitude", "latitude"],
                 "location_embed_marker": self.location_embed_marker,
-                "token_placement": "before_vision_start",
+                "token_placement": getattr(
+                    self,
+                    "location_token_placement",
+                    "before_vision_start",
+                ),
             }
         )
         return manifest
@@ -998,33 +1023,28 @@ class Qwen3VLModule(L.LightningModule):
         if self._cache_has_tokens(kwargs.get("past_key_values")):
             return args, kwargs
 
-        projected_tokens = []
-        insert_positions = None
-
         if location_state is not None:
-            insert_positions = location_state["insert_positions"]
             lat = location_state["lat"]
             lon = location_state["lon"]
 
             loc_embed = self._encode_satclip_coordinates(lat, lon)
 
             loc_tokens = self.location_modality_projection(loc_embed)
-            projected_tokens.append(loc_tokens)
+            self._replace_projected_token_placeholders(
+                kwargs,
+                loc_tokens,
+                location_state["insert_positions"],
+            )
 
         if non_rgb_state is not None:
-            insert_positions = non_rgb_state["insert_positions"]
             imagery = non_rgb_state["tensor"].to(self.device)
             bands = non_rgb_state["bands"]
             non_rgb_features = self._encode_non_rgb_imagery(imagery, bands)
             non_rgb_tokens = self.non_rgb_modality_projection(non_rgb_features)
-            projected_tokens.append(non_rgb_tokens)
-
-        if projected_tokens:
-            tokens = torch.cat(projected_tokens, dim=1)
             self._replace_projected_token_placeholders(
                 kwargs,
-                tokens,
-                insert_positions,
+                non_rgb_tokens,
+                non_rgb_state["insert_positions"],
             )
 
         if encoding_state is not None:
@@ -1180,6 +1200,109 @@ class Qwen3VLModule(L.LightningModule):
         positions = torch.where(has_visual, first_visual, fallback)
         return positions
 
+    def _compute_user_message_end_boundary(self, batch: dict[str, Any]) -> torch.Tensor:
+        """Return the user-message end immediately before the assistant header."""
+        input_ids = batch.get("input_ids")
+        if input_ids is None:
+            raise ValueError("input_ids are required for projected token insertion")
+
+        tokenizer = getattr(self.tokenizer, "tokenizer", self.tokenizer)
+        assistant_marker_ids = tokenizer.encode(
+            "<|im_start|>assistant\n",
+            add_special_tokens=False,
+        )
+        user_end_ids = tokenizer.encode("<|im_end|>", add_special_tokens=False)
+        location_marker_ids = tokenizer.encode(
+            self.location_embed_marker,
+            add_special_tokens=False,
+        )
+        if not assistant_marker_ids or not user_end_ids or not location_marker_ids:
+            raise ValueError("Could not tokenize Qwen chat boundaries")
+
+        positions: list[int] = []
+        for row_ids_tensor in input_ids:
+            row_ids = row_ids_tensor.tolist()
+            assistant_index = self._find_token_subsequence(row_ids, assistant_marker_ids)
+            if assistant_index is None:
+                raise ValueError(
+                    "Could not find Qwen assistant header for after-marker token insertion"
+                )
+            user_end_index = None
+            search_start = 0
+            while search_start < assistant_index:
+                relative_index = self._find_token_subsequence(
+                    row_ids[search_start:assistant_index],
+                    user_end_ids,
+                )
+                if relative_index is None:
+                    break
+                user_end_index = search_start + relative_index
+                search_start = user_end_index + 1
+            if user_end_index is None:
+                raise ValueError(
+                    "Could not find the Qwen user-message end before the assistant header"
+                )
+            marker_start = user_end_index - len(location_marker_ids)
+            if marker_start < 0 or row_ids[marker_start:user_end_index] != location_marker_ids:
+                raise ValueError(
+                    "The loc_embed user message must end with location_embed_marker "
+                    "before after-marker token insertion"
+                )
+            positions.append(user_end_index)
+        return torch.tensor(positions, device=input_ids.device, dtype=torch.long)
+
+    def _insert_projected_placeholder_block(
+        self,
+        batch: dict[str, Any],
+        *,
+        positions: torch.Tensor,
+        num_tokens: int,
+    ) -> None:
+        """Insert one attended, loss-masked projected-token placeholder block."""
+        batch_size = batch["input_ids"].shape[0]
+        placeholder_token_id = self.tokenizer.pad_token_id
+        if placeholder_token_id is None:
+            raise ValueError("Projected token conditioning requires a tokenizer pad token")
+        placeholders = torch.full(
+            (batch_size, num_tokens),
+            placeholder_token_id,
+            device=batch["input_ids"].device,
+            dtype=batch["input_ids"].dtype,
+        )
+        batch["input_ids"] = self._insert_tokens_2d(
+            batch["input_ids"], placeholders, positions
+        )
+        if "attention_mask" in batch:
+            attended = torch.ones(
+                batch_size,
+                num_tokens,
+                device=batch["attention_mask"].device,
+                dtype=batch["attention_mask"].dtype,
+            )
+            batch["attention_mask"] = self._insert_tokens_2d(
+                batch["attention_mask"], attended, positions
+            )
+        if "mm_token_type_ids" in batch:
+            text_token_types = torch.zeros(
+                batch_size,
+                num_tokens,
+                device=batch["mm_token_type_ids"].device,
+                dtype=batch["mm_token_type_ids"].dtype,
+            )
+            batch["mm_token_type_ids"] = self._insert_tokens_2d(
+                batch["mm_token_type_ids"], text_token_types, positions
+            )
+        if "labels" in batch:
+            ignored = torch.full(
+                (batch_size, num_tokens),
+                -100,
+                device=batch["labels"].device,
+                dtype=batch["labels"].dtype,
+            )
+            batch["labels"] = self._insert_tokens_2d(
+                batch["labels"], ignored, positions
+            )
+
     def _prepare_model_inputs(self, batch: dict[str, Any]):
         """Strip non-model fields and set up projected token insertion state."""
         self._reset_decoder_conditioning_state()
@@ -1210,30 +1333,26 @@ class Qwen3VLModule(L.LightningModule):
         elif self.non_rgb_conditioning != "disabled":
             raise ValueError(f"Unsupported non_rgb_conditioning: {self.non_rgb_conditioning}")
 
-        uses_projected_tokens = self.loc_mode == "loc_embed" or self.non_rgb_conditioning == "enabled"
-        insert_positions = None
-        if uses_projected_tokens:
-            insert_positions = self._compute_visual_boundary(batch)
+        visual_positions = None
+        if self.loc_mode == "loc_embed" or self.non_rgb_conditioning == "enabled":
+            visual_positions = self._compute_visual_boundary(batch)
 
-        num_inserted_tokens = 0
-        if self.non_rgb_conditioning == "enabled":
-            self._non_rgb_insertion_state = {
-                "tensor": non_rgb_imagery["tensor"].to(self.device),
-                "bands": non_rgb_imagery["bands"],
-                "insert_positions": insert_positions.to(self.device),
-            }
-            num_inserted_tokens += self.num_non_rgb_tokens
-
+        location_positions = None
         if self.loc_mode == "loc_embed":
             if lat is None or lon is None:
                 raise ValueError("loc_mode='loc_embed' requires both lat and lon in the batch")
 
-            self._location_insertion_state = {
-                "lat": lat.to(self.device),
-                "lon": lon.to(self.device),
-                "insert_positions": insert_positions.to(self.device),
-            }
-            num_inserted_tokens += self.num_location_tokens
+            placement = getattr(
+                self,
+                "location_token_placement",
+                "before_vision_start",
+            )
+            if placement == "before_vision_start":
+                location_positions = visual_positions
+            elif placement == "after_location_marker":
+                location_positions = self._compute_user_message_end_boundary(batch)
+            else:
+                raise ValueError(f"Unsupported location token placement: {placement}")
         elif self.loc_mode in ADDITIVE_LOCATION_MODES:
             if lat is None or lon is None:
                 raise ValueError(
@@ -1244,51 +1363,54 @@ class Qwen3VLModule(L.LightningModule):
                 "lon": lon.to(self.device),
             }
 
-        if num_inserted_tokens > 0 and "labels" in batch:
-            B = batch["labels"].shape[0]
-            ignore = torch.full(
-                (B, num_inserted_tokens),
-                -100,
-                device=batch["labels"].device,
-                dtype=batch["labels"].dtype,
+        inserted_spans: list[tuple[torch.Tensor, int]] = []
+        if self.loc_mode == "loc_embed" and getattr(
+            self, "location_token_placement", "before_vision_start"
+        ) == "before_vision_start":
+            self._insert_projected_placeholder_block(
+                batch,
+                positions=location_positions,
+                num_tokens=self.num_location_tokens,
             )
-            batch["labels"] = self._insert_tokens_2d(batch["labels"], ignore, insert_positions)
+            self._location_insertion_state = {
+                "lat": lat.to(self.device),
+                "lon": lon.to(self.device),
+                "insert_positions": location_positions.to(self.device),
+            }
+            inserted_spans.append((location_positions, self.num_location_tokens))
+            visual_positions = visual_positions + self.num_location_tokens
 
-        if num_inserted_tokens > 0:
-            batch_size = batch["input_ids"].shape[0]
-            placeholder_token_id = self.tokenizer.pad_token_id
-            if placeholder_token_id is None:
-                raise ValueError("Projected token conditioning requires a tokenizer pad token")
-            placeholders = torch.full(
-                (batch_size, num_inserted_tokens),
-                placeholder_token_id,
-                device=batch["input_ids"].device,
-                dtype=batch["input_ids"].dtype,
+        if self.non_rgb_conditioning == "enabled":
+            self._insert_projected_placeholder_block(
+                batch,
+                positions=visual_positions,
+                num_tokens=self.num_non_rgb_tokens,
             )
-            batch["input_ids"] = self._insert_tokens_2d(
-                batch["input_ids"], placeholders, insert_positions
-            )
-            if "attention_mask" in batch:
-                attended = torch.ones(
-                    batch_size,
-                    num_inserted_tokens,
-                    device=batch["attention_mask"].device,
-                    dtype=batch["attention_mask"].dtype,
-                )
-                batch["attention_mask"] = self._insert_tokens_2d(
-                    batch["attention_mask"], attended, insert_positions
-                )
-            if "mm_token_type_ids" in batch:
-                text_token_types = torch.zeros(
-                    batch_size,
-                    num_inserted_tokens,
-                    device=batch["mm_token_type_ids"].device,
-                    dtype=batch["mm_token_type_ids"].dtype,
-                )
-                batch["mm_token_type_ids"] = self._insert_tokens_2d(
-                    batch["mm_token_type_ids"], text_token_types, insert_positions
-                )
+            self._non_rgb_insertion_state = {
+                "tensor": non_rgb_imagery["tensor"].to(self.device),
+                "bands": non_rgb_imagery["bands"],
+                "insert_positions": visual_positions.to(self.device),
+            }
+            inserted_spans.append((visual_positions, self.num_non_rgb_tokens))
 
+        if self.loc_mode == "loc_embed" and getattr(
+            self, "location_token_placement", "before_vision_start"
+        ) == "after_location_marker":
+            if self.non_rgb_conditioning == "enabled":
+                location_positions = location_positions + self.num_non_rgb_tokens
+            self._insert_projected_placeholder_block(
+                batch,
+                positions=location_positions,
+                num_tokens=self.num_location_tokens,
+            )
+            self._location_insertion_state = {
+                "lat": lat.to(self.device),
+                "lon": lon.to(self.device),
+                "insert_positions": location_positions.to(self.device),
+            }
+            inserted_spans.append((location_positions, self.num_location_tokens))
+
+        if inserted_spans:
             sequence_length = batch["input_ids"].shape[1]
             for key in ("attention_mask", "labels", "mm_token_type_ids"):
                 if key in batch and batch[key].shape[-1] != sequence_length:
@@ -1299,8 +1421,9 @@ class Qwen3VLModule(L.LightningModule):
 
         self._validate_supervision_mask(
             batch,
-            insert_positions=insert_positions,
-            num_inserted_tokens=num_inserted_tokens,
+            insert_positions=None,
+            num_inserted_tokens=0,
+            inserted_spans=inserted_spans,
         )
 
         return batch, target_texts, lat, lon, non_rgb_imagery, sample_metadata
@@ -1321,6 +1444,7 @@ class Qwen3VLModule(L.LightningModule):
         *,
         insert_positions: torch.Tensor | None,
         num_inserted_tokens: int,
+        inserted_spans: list[tuple[torch.Tensor, int]] | None = None,
     ) -> None:
         """Validate assistant-only supervision and masked multimodal token positions once."""
         if (
@@ -1357,13 +1481,18 @@ class Qwen3VLModule(L.LightningModule):
                     "positions before the response to use label -100"
                 )
 
-        if num_inserted_tokens > 0:
-            if insert_positions is None:
-                raise ValueError("Projected token insertion positions are missing")
-            for row_index, position in enumerate(insert_positions.tolist()):
+        spans = inserted_spans
+        if spans is None:
+            spans = []
+            if num_inserted_tokens > 0:
+                if insert_positions is None:
+                    raise ValueError("Projected token insertion positions are missing")
+                spans.append((insert_positions, num_inserted_tokens))
+        for span_positions, span_length in spans:
+            for row_index, position in enumerate(span_positions.tolist()):
                 inserted_labels = labels[
                     row_index,
-                    position : position + num_inserted_tokens,
+                    position : position + span_length,
                 ]
                 if inserted_labels.ne(-100).any():
                     raise ValueError("Projected S1/S2/location tokens must be ignored by loss")
