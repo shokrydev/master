@@ -1,4 +1,10 @@
+import sys
+from types import SimpleNamespace
+
+import pytest
+
 from scripts.score_bentxt_clair import (
+    _load_judge,
     batches,
     build_judge_messages,
     tokenize_rendered_prompts,
@@ -51,6 +57,56 @@ def test_multimodal_processor_receives_prompts_as_text():
         "max_length": 3584,
     }
     assert result == {"input_ids": "tokens"}
+
+
+def test_judge_uses_direct_transformers_loader(monkeypatch: pytest.MonkeyPatch):
+    calls = {}
+
+    class FakeTextTokenizer:
+        padding_side = "right"
+        pad_token_id = None
+        eos_token_id = 42
+
+    class FakeProcessor:
+        tokenizer = FakeTextTokenizer()
+
+    class FakeModel:
+        def eval(self):
+            calls["eval"] = True
+
+    class FakeAutoProcessor:
+        @staticmethod
+        def from_pretrained(model_name):
+            calls["processor"] = model_name
+            return FakeProcessor()
+
+    class FakeAutoModel:
+        @staticmethod
+        def from_pretrained(model_name, **kwargs):
+            calls["model"] = (model_name, kwargs)
+            return FakeModel()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoModelForMultimodalLM=FakeAutoModel,
+            AutoProcessor=FakeAutoProcessor,
+        ),
+    )
+
+    model, processor, text_tokenizer = _load_judge("judge", 4096)
+
+    assert isinstance(model, FakeModel)
+    assert isinstance(processor, FakeProcessor)
+    assert text_tokenizer is processor.tokenizer
+    assert text_tokenizer.padding_side == "left"
+    assert text_tokenizer.pad_token_id == 42
+    assert calls == {
+        "processor": "judge",
+        "model": ("judge", {"device_map": "auto", "dtype": "auto"}),
+        "eval": True,
+    }
 
 
 def test_parse_clair_response_accepts_json_after_reasoning():

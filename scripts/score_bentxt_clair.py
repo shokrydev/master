@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Score BigEarthNet.txt captions with a local Unsloth CLAIR judge."""
+"""Score BigEarthNet.txt captions with a local Transformers CLAIR judge."""
 
 from __future__ import annotations
 
@@ -78,28 +78,30 @@ def _write_json(path: Path, value: Any) -> None:
 
 
 def _load_judge(model_name_or_path: str, max_sequence_length: int):
-    from unsloth import FastModel
+    from transformers import AutoModelForMultimodalLM, AutoProcessor
 
     started = time.perf_counter()
-    model, tokenizer = FastModel.from_pretrained(
-        model_name=model_name_or_path,
-        max_seq_length=max_sequence_length,
-        dtype=None,
-        load_in_4bit=True,
+    processor = AutoProcessor.from_pretrained(model_name_or_path)
+    model = AutoModelForMultimodalLM.from_pretrained(
+        model_name_or_path,
+        device_map="auto",
+        dtype="auto",
     )
-    FastModel.for_inference(model)
-    tokenizer.padding_side = "left"
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+    model.eval()
+    text_tokenizer = processor.tokenizer
+    text_tokenizer.padding_side = "left"
+    if text_tokenizer.pad_token_id is None:
+        text_tokenizer.pad_token_id = text_tokenizer.eos_token_id
     print(f"Loaded and prepared CLAIR judge in {time.perf_counter() - started:.1f}s", flush=True)
-    return model, tokenizer
+    return model, processor, text_tokenizer
 
 
 def _generate_batch(
     records: Sequence[BENTxTPrediction],
     *,
     model: Any,
-    tokenizer: Any,
+    processor: Any,
+    text_tokenizer: Any,
     max_sequence_length: int,
     max_new_tokens: int,
 ) -> list[dict[str, Any]]:
@@ -107,7 +109,7 @@ def _generate_batch(
 
     prompts = [format_clair_prompt(record.prediction, record.target_texts) for record in records]
     rendered = [
-        tokenizer.apply_chat_template(
+        processor.apply_chat_template(
             build_judge_messages(prompt),
             tokenize=False,
             add_generation_prompt=True,
@@ -116,7 +118,7 @@ def _generate_batch(
         for prompt in prompts
     ]
     inputs = tokenize_rendered_prompts(
-        tokenizer,
+        processor,
         rendered,
         max_input_length=max_sequence_length - max_new_tokens,
     )
@@ -129,13 +131,13 @@ def _generate_batch(
             **inputs,
             do_sample=False,
             max_new_tokens=max_new_tokens,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=text_tokenizer.pad_token_id,
+            eos_token_id=text_tokenizer.eos_token_id,
             use_cache=True,
         )
     elapsed = time.perf_counter() - started
     generated = sequences[:, input_width:]
-    responses = tokenizer.batch_decode(generated, skip_special_tokens=True)
+    responses = text_tokenizer.batch_decode(generated, skip_special_tokens=True)
 
     rows = []
     for index, (record, prompt, raw_response) in enumerate(
@@ -143,7 +145,7 @@ def _generate_batch(
     ):
         parsed = parse_clair_response(raw_response)
         prompt_tokens = int(inputs["attention_mask"][index].sum().item())
-        completion_tokens = int(generated[index].ne(tokenizer.pad_token_id).sum().item())
+        completion_tokens = int(generated[index].ne(text_tokenizer.pad_token_id).sum().item())
         rows.append(
             {
                 "sample_id": record.sample_id,
@@ -173,7 +175,8 @@ def _score_export(
     output_dir: Path,
     *,
     model: Any,
-    tokenizer: Any,
+    processor: Any,
+    text_tokenizer: Any,
     args: argparse.Namespace,
     provenance: dict[str, Any],
 ) -> int:
@@ -189,7 +192,8 @@ def _score_export(
             _generate_batch(
                 record_batch,
                 model=model,
-                tokenizer=tokenizer,
+                processor=processor,
+                text_tokenizer=text_tokenizer,
                 max_sequence_length=args.max_sequence_length,
                 max_new_tokens=args.max_new_tokens,
             )
@@ -235,19 +239,24 @@ def main() -> None:
             raise ValueError(f"predictions do not exist: {predictions}")
 
     print(f"Loading CLAIR judge once for {len(score_specs)} prediction export(s)", flush=True)
-    model, tokenizer = _load_judge(args.model_name_or_path, args.max_sequence_length)
+    model, processor, text_tokenizer = _load_judge(
+        args.model_name_or_path,
+        args.max_sequence_length,
+    )
     model_config = getattr(model, "config", None)
+    quantization_config = getattr(model_config, "quantization_config", None)
+    if hasattr(quantization_config, "to_dict"):
+        quantization_config = quantization_config.to_dict()
     provenance = {
-        "backend": "unsloth-transformers",
+        "backend": "transformers",
         "judge_label": args.judge_label,
         "model_name_or_path": args.model_name_or_path,
         "model_commit_hash": getattr(model_config, "_commit_hash", None),
-        "quantization": "bitsandbytes NF4",
+        "quantization": "prequantized bitsandbytes NF4",
+        "quantization_config": quantization_config,
         "package_versions": {
             "torch": _package_version("torch"),
             "transformers": _package_version("transformers"),
-            "unsloth": _package_version("unsloth"),
-            "unsloth_zoo": _package_version("unsloth-zoo"),
             "bitsandbytes": _package_version("bitsandbytes"),
         },
     }
@@ -256,7 +265,8 @@ def main() -> None:
             predictions,
             output_dir,
             model=model,
-            tokenizer=tokenizer,
+            processor=processor,
+            text_tokenizer=text_tokenizer,
             args=args,
             provenance=provenance,
         )

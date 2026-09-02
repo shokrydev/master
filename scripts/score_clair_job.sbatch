@@ -22,6 +22,8 @@ set +a
 export PYTHONPATH="$SLURM_SUBMIT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 CLAIR_MODEL_NAME_OR_PATH="${CLAIR_MODEL_NAME_OR_PATH:-unsloth/Qwen3.8-27B-unsloth-bnb-4bit}"
+CLAIR_TRANSFORMERS_VERSION="${CLAIR_TRANSFORMERS_VERSION:-5.15.1}"
+export CLAIR_TRANSFORMERS_VERSION
 if [ -z "${EVALUATION_OUTPUT_ROOT:-}" ]; then
     echo "EVALUATION_OUTPUT_ROOT is required."
     exit 1
@@ -39,6 +41,13 @@ fi
 
 "${python_cmd[@]}" -c \
     'import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'
+"${python_cmd[@]}" -c \
+    'import importlib.metadata, os
+actual = importlib.metadata.version("transformers")
+expected = os.environ["CLAIR_TRANSFORMERS_VERSION"]
+if actual != expected:
+    raise RuntimeError(f"CLAIR requires transformers {expected}, found {actual}")
+print(f"Transformers {actual}")'
 
 scorer_args=(
     --model-name-or-path "$CLAIR_MODEL_NAME_OR_PATH"
