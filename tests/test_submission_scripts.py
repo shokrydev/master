@@ -212,6 +212,8 @@ class SubmissionScriptsTest(unittest.TestCase):
                     str(scripts_dir / "submit_evaluation_batch_profile_job.sh"),
                     "--adapter-dir",
                     "/tmp/future-adapter",
+                    "--size",
+                    "4B",
                     "--dependency",
                     "afterok:11807",
                     "--batch-sizes",
@@ -234,6 +236,8 @@ class SubmissionScriptsTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("--dependency=afterok:11807", result.stdout)
+            self.assertIn("--size 4B", result.stdout)
+            self.assertIn("Model size: 4B", result.stdout)
             self.assertIn("--batch-sizes 16 64 256", result.stdout)
             self.assertIn("--memory-safety-fraction 0.90", result.stdout)
             self.assertIn("--worker-counts 8 10 12", result.stdout)
@@ -522,6 +526,263 @@ class SubmissionScriptsTest(unittest.TestCase):
         )
         self.assertIn('run_output="${EVALUATION_OUTPUT_ROOT%/}/clair_${SLURM_JOB_ID}"', script)
         self.assertNotIn("/clair_fit_", script)
+
+    def test_packed_trajectory_helper_dry_run_plans_one_job_for_four_entries(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_server_env(workdir)
+            scripts_dir = workdir / "scripts"
+            scripts_dir.mkdir()
+            shutil.copy2(
+                REPO_ROOT / "scripts/submit_fit_trajectory_evaluation_job.sh",
+                scripts_dir,
+            )
+
+            result = subprocess.run(
+                [
+                    str(scripts_dir / "submit_fit_trajectory_evaluation_job.sh"),
+                    "--fit-job",
+                    "11809",
+                    "--condition",
+                    "loc_embed",
+                    "--size",
+                    "2B",
+                    "--seed",
+                    "42",
+                    "--correct-step",
+                    "250",
+                    "--correct-step",
+                    "2500",
+                    "--correct-step",
+                    "10000",
+                    "--correct-step",
+                    "20000",
+                    "--dry-run",
+                ],
+                cwd=workdir,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Entries: 4", result.stdout)
+            self.assertEqual(result.stdout.count("evaluate_trajectory_job.sbatch"), 1)
+            self.assertIn("step_000250_correct", result.stdout)
+            self.assertIn("step_020000_correct", result.stdout)
+            self.assertIn("[Dry run - not writing or submitting]", result.stdout)
+            self.assertFalse((workdir / "outputs").exists())
+
+    def test_packed_trajectory_helper_submits_one_parent_and_one_clair_job(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_server_env(workdir)
+            scripts_dir = workdir / "scripts"
+            scripts_dir.mkdir()
+            shutil.copy2(
+                REPO_ROOT / "scripts/submit_fit_trajectory_evaluation_job.sh",
+                scripts_dir,
+            )
+            finetuning_root = workdir / "finetuning"
+            with (workdir / ".env").open("a", encoding="utf-8") as handle:
+                handle.write(f"FINETUNING_OUTPUT_ROOT={finetuning_root}\n")
+            fit_root = finetuning_root / "bigearthnet_13000"
+            (fit_root / "qlora_adapter").mkdir(parents=True)
+            for step in (50, 100, 500, 1000, 5000):
+                (fit_root / "qlora_adapter_steps" / f"step_{step:06d}").mkdir(
+                    parents=True
+                )
+
+            mock_bin = workdir / "bin"
+            mock_bin.mkdir()
+            call_log = workdir / "sbatch-calls"
+            counter = workdir / "counter"
+            counter.write_text("61000\n", encoding="utf-8")
+            mock_sbatch = mock_bin / "sbatch"
+            mock_sbatch.write_text(
+                "#!/bin/bash\n"
+                f"call_log={call_log!s}\n"
+                f"counter={counter!s}\n"
+                'printf \'%s\\n\' "$*" >> "$call_log"\n'
+                'job=$(cat "$counter")\n'
+                'job=$((job + 1))\n'
+                'echo "$job" > "$counter"\n'
+                'if [ "${1:-}" = "--parsable" ]; then\n'
+                '    echo "$job"\n'
+                "else\n"
+                '    echo "Submitted batch job $job"\n'
+                "fi\n",
+                encoding="utf-8",
+            )
+            mock_sbatch.chmod(0o755)
+            manifest = workdir / "packed.tsv"
+            env = os.environ.copy()
+            env["PATH"] = f"{mock_bin}:{env['PATH']}"
+
+            result = subprocess.run(
+                [
+                    str(scripts_dir / "submit_fit_trajectory_evaluation_job.sh"),
+                    "--fit-job",
+                    "13000",
+                    "--condition",
+                    "loc_text",
+                    "--size",
+                    "4B",
+                    "--seed",
+                    "42",
+                    "--short-batch",
+                    "128",
+                    "--bbox-batch",
+                    "256",
+                    "--caption-batch",
+                    "192",
+                    "--correct-step",
+                    "50",
+                    "--correct-step",
+                    "100",
+                    "--correct-step",
+                    "500",
+                    "--correct-step",
+                    "1000",
+                    "--correct-step",
+                    "5000",
+                    "--correct-step",
+                    "final",
+                    "--shuffled-step",
+                    "1000",
+                    "--shuffled-step",
+                    "final",
+                    "--manifest",
+                    str(manifest),
+                    "--submit-clair",
+                ],
+                cwd=workdir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(manifest.read_text(encoding="utf-8").splitlines()), 9)
+            calls = call_log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(calls), 2)
+            self.assertIn("evaluate_trajectory_job.sbatch", calls[0])
+            self.assertIn("--dependency=afterok:61001", calls[1])
+            self.assertIn("CLAIR_EXPECTED_EXPORTS=8", calls[1])
+            jobs_manifest = workdir / "packed_jobs.tsv"
+            self.assertTrue(jobs_manifest.is_file())
+            self.assertIn("61001\t61001\t13000\tloc_text\t4B", jobs_manifest.read_text())
+
+    def test_packed_trajectory_helper_refuses_unprofiled_larger_model_batches(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_server_env(workdir)
+            scripts_dir = workdir / "scripts"
+            scripts_dir.mkdir()
+            shutil.copy2(
+                REPO_ROOT / "scripts/submit_fit_trajectory_evaluation_job.sh",
+                scripts_dir,
+            )
+
+            result = subprocess.run(
+                [
+                    str(scripts_dir / "submit_fit_trajectory_evaluation_job.sh"),
+                    "--fit-job",
+                    "13000",
+                    "--condition",
+                    "loc_embed",
+                    "--size",
+                    "4B",
+                    "--seed",
+                    "42",
+                    "--correct-step",
+                    "final",
+                    "--dry-run",
+                ],
+                cwd=workdir,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("requires profiler-selected", result.stdout)
+            self.assertIn("2B values are intentionally not reused", result.stdout)
+
+    def test_packed_trajectory_runner_resumes_completed_entries(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_server_env(workdir)
+            evaluation_root = workdir / "evaluation"
+            with (workdir / ".env").open("a", encoding="utf-8") as handle:
+                handle.write(f"EVALUATION_OUTPUT_ROOT={evaluation_root}\n")
+            scripts_dir = workdir / "scripts"
+            scripts_dir.mkdir()
+            shutil.copy2(
+                REPO_ROOT / "scripts/evaluate_trajectory_job.sbatch",
+                scripts_dir,
+            )
+            call_log = workdir / "evaluation-calls"
+            evaluator = scripts_dir / "evaluate_job.sbatch"
+            evaluator.write_text(
+                "#!/bin/bash\n"
+                "set -euo pipefail\n"
+                f"printf '%s\\n' \"$EVAL_OUTPUT_DIR\" >> {call_log!s}\n"
+                'mkdir -p "$EVAL_OUTPUT_DIR/scored_predictions"\n'
+                'printf \'{}\\n\' > "$EVAL_OUTPUT_DIR/predictions.jsonl"\n'
+                'printf \'{}\\n\' > "$EVAL_OUTPUT_DIR/scored_predictions/summary.json"\n',
+                encoding="utf-8",
+            )
+            evaluator.chmod(0o755)
+            adapter_root = workdir / "adapters"
+            adapter_50 = adapter_root / "step_000050"
+            adapter_100 = adapter_root / "step_000100"
+            adapter_50.mkdir(parents=True)
+            adapter_100.mkdir(parents=True)
+            plan = workdir / "plan.tsv"
+            plan.write_text(
+                "evaluation_job\tfit_job\tcondition\tseed\tstep\tcoordinate_setting\tadapter_dir\trun_label\n"
+                f"SLURM_JOB_ID/entries/step_000050_correct\t13000\tno_loc\t42\t50\tcorrect\t{adapter_50!s}\trun-50\n"
+                f"SLURM_JOB_ID/entries/step_000100_correct\t13000\tno_loc\t42\t100\tcorrect\t{adapter_100!s}\trun-100\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "SLURM_SUBMIT_DIR": str(workdir),
+                    "SLURM_JOB_ID": "62001",
+                    "TRAJECTORY_MODEL_SIZE": "2B",
+                }
+            )
+
+            command = [str(scripts_dir / "evaluate_trajectory_job.sbatch"), str(plan)]
+            first = subprocess.run(
+                command,
+                cwd=workdir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(len(call_log.read_text(encoding="utf-8").splitlines()), 2)
+
+            env["SLURM_JOB_ID"] = "62002"
+            env["TRAJECTORY_OUTPUT_ID"] = "62001"
+            second = subprocess.run(
+                command,
+                cwd=workdir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(len(call_log.read_text(encoding="utf-8").splitlines()), 2)
+            self.assertEqual(second.stdout.count("Skipping completed entry"), 2)
+            resolved = evaluation_root / "trajectory_62001/trajectory_manifest.tsv"
+            self.assertIn("62001/entries/step_000050_correct", resolved.read_text())
 
     def test_completed_fit_helper_refuses_missing_adapters_before_submission(self):
         with tempfile.TemporaryDirectory() as tmpdir:

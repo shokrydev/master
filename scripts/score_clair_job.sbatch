@@ -72,8 +72,18 @@ if [ -n "${CLAIR_TRAJECTORY_MANIFEST:-}" ] || [ -n "${CLAIR_FIT_JOB:-}" ]; then
         if [ "$evaluation_job" = evaluation_job ] || [ "$fit_job" != "$CLAIR_FIT_JOB" ]; then
             continue
         fi
-        predictions="${EVALUATION_OUTPUT_ROOT%/}/bigearthnet_${evaluation_job}/predictions.jsonl"
-        clair_output="${EVALUATION_OUTPUT_ROOT%/}/bigearthnet_${evaluation_job}/clair_qwen38_bnb4"
+        if [[ "$evaluation_job" == */entries/* ]]; then
+            trajectory_job="${evaluation_job%%/*}"
+            entry_path="${evaluation_job#*/}"
+            evaluation_dir="${EVALUATION_OUTPUT_ROOT%/}/trajectory_${trajectory_job}/${entry_path}"
+        elif [[ "$evaluation_job" =~ ^[0-9]+$ ]]; then
+            evaluation_dir="${EVALUATION_OUTPUT_ROOT%/}/bigearthnet_${evaluation_job}"
+        else
+            echo "Unsupported evaluation identifier in trajectory manifest: $evaluation_job"
+            exit 1
+        fi
+        predictions="${evaluation_dir}/predictions.jsonl"
+        clair_output="${evaluation_dir}/clair_qwen38_bnb4"
         if [ ! -f "$predictions" ]; then
             echo "Missing predictions for evaluation job $evaluation_job: $predictions"
             exit 1
@@ -83,7 +93,16 @@ if [ -n "${CLAIR_TRAJECTORY_MANIFEST:-}" ] || [ -n "${CLAIR_FIT_JOB:-}" ]; then
         scored_count=$((scored_count + 1))
     done < "$CLAIR_TRAJECTORY_MANIFEST"
 
-    if [ "$scored_count" -ne 6 ] && [ "$scored_count" -ne 8 ]; then
+    if [ -n "${CLAIR_EXPECTED_EXPORTS:-}" ]; then
+        if ! [[ "$CLAIR_EXPECTED_EXPORTS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "CLAIR_EXPECTED_EXPORTS must be a positive integer."
+            exit 1
+        fi
+        if [ "$scored_count" -ne "$CLAIR_EXPECTED_EXPORTS" ]; then
+            echo "Expected $CLAIR_EXPECTED_EXPORTS trajectory exports for fit $CLAIR_FIT_JOB, found $scored_count."
+            exit 1
+        fi
+    elif [ "$scored_count" -ne 6 ] && [ "$scored_count" -ne 8 ]; then
         echo "Expected 6 or 8 trajectory exports for fit $CLAIR_FIT_JOB, found $scored_count."
         exit 1
     fi

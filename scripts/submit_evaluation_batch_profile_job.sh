@@ -1,5 +1,5 @@
 #!/bin/bash
-# Submit the task-aware capacity and throughput 2B evaluation profiler.
+# Submit the task-aware capacity and throughput evaluation profiler.
 
 set -e
 
@@ -13,7 +13,8 @@ source .env
 set +a
 
 adapter_dir=""
-job_name="profile-eval-batches-2B"
+job_name=""
+size="2B"
 partition="${SLURM_DEFAULT_PARTITION:-}"
 dependency=""
 dry_run=false
@@ -32,6 +33,11 @@ while [[ $# -gt 0 ]]; do
             require_arg "$1" "${2:-}"
             adapter_dir="$2"
             profile_args+=("$1" "$2")
+            shift 2
+            ;;
+        --size)
+            require_arg "$1" "${2:-}"
+            size="$2"
             shift 2
             ;;
         --name)
@@ -59,6 +65,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+case "$size" in
+    2B|4B|8B) ;;
+    *) echo "Invalid --size '$size'. Use 2B, 4B or 8B."; exit 1 ;;
+esac
+job_name="${job_name:-profile-eval-batches-${size}}"
 
 if [ -z "$adapter_dir" ]; then
     echo "Missing --adapter-dir."
@@ -93,11 +105,12 @@ full_cmd=(
 if [ -n "$dependency" ]; then
     full_cmd+=("--dependency=$dependency")
 fi
-full_cmd+=(scripts/profile_bentxt_evaluation_batch_size.sbatch)
+full_cmd+=(scripts/profile_bentxt_evaluation_batch_size.sbatch --size "$size")
 full_cmd+=("${profile_args[@]}")
 
 echo "Evaluation generation batch profiler"
 echo "Adapter: $adapter_dir"
+echo "Model size: $size"
 echo "Dependency: ${dependency:-<none>}"
 echo "Candidate args: ${profile_args[*]}"
 printf 'Command:'

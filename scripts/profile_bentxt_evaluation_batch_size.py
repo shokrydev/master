@@ -2,10 +2,10 @@
 """Profile safe and efficient BigEarthNet.txt generation batch sizes.
 
 For each production generation bucket, the capacity phase replicates its
-longest tokenized bench instruction under the heaviest 2B core condition
-(`loc_embed`) and forces every sequence to its configured token cap. The
-throughput phase measures natural-EOS generation on an evenly spaced subset of
-the same bucket.
+longest tokenized bench instruction under the heaviest core condition
+(`loc_embed`) at the selected model size and forces every sequence to its
+configured token cap. The throughput phase measures natural-EOS generation on
+an evenly spaced subset of the same bucket.
 """
 
 from __future__ import annotations
@@ -42,7 +42,11 @@ from src.bentxt_grounding import format_grounding_prompt, format_grounding_targe
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = REPO_ROOT / ".env"
-MODEL_NAME = "unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit"
+MODEL_NAMES = {
+    "2B": "unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit",
+    "4B": "unsloth/Qwen3-VL-4B-Instruct-unsloth-bnb-4bit",
+    "8B": "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit",
+}
 GIB = 1024**3
 
 
@@ -74,6 +78,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Profile task-aware capacity and evaluation throughput."
     )
+    parser.add_argument("--size", choices=tuple(MODEL_NAMES), default="2B")
     parser.add_argument("--adapter-dir", type=Path, required=True)
     parser.add_argument(
         "--batch-sizes",
@@ -640,8 +645,9 @@ def main() -> None:
     if dataset is None:
         raise SystemExit("Failed to initialize the bench dataset")
 
+    model_name = MODEL_NAMES[args.size]
     module = Qwen3VLModule(
-        model_name_or_path=MODEL_NAME,
+        model_name_or_path=model_name,
         adapter_dir=str(args.adapter_dir),
         max_seq_length=2048,
         max_new_tokens=max(DEFAULT_MAX_NEW_TOKENS_BY_BUCKET.values()),
@@ -658,6 +664,7 @@ def main() -> None:
         satclip_dim=256,
         num_location_tokens=8,
         location_projection_lr_multiplier=5.0,
+        model_size=args.size,
     )
     module.setup("test")
     module.to(device)
@@ -670,7 +677,7 @@ def main() -> None:
     total_memory_gb = torch.cuda.get_device_properties(device).total_memory / GIB
     print(
         "Task-aware evaluation capacity and throughput profile\n"
-        f"model={MODEL_NAME}\n"
+        f"model={model_name}\n"
         f"adapter={args.adapter_dir}\n"
         f"bench_rows={len(dataset)}\n"
         f"gpu_total_memory_gb={total_memory_gb:.2f}\n"
@@ -699,7 +706,8 @@ def main() -> None:
     }
 
     summary = {
-        "model": MODEL_NAME,
+        "model": model_name,
+        "model_size": args.size,
         "adapter_dir": str(args.adapter_dir),
         "condition": "loc_embed",
         "split": "bench",
@@ -719,7 +727,7 @@ def main() -> None:
         },
     }
     output_path = args.json_output or Path(
-        "outputs/batch_profiles/profile_evaluation_2B_loc_embed.json"
+        f"outputs/batch_profiles/profile_evaluation_{args.size}_loc_embed.json"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")

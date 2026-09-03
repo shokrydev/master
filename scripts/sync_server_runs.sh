@@ -31,7 +31,7 @@ Options:
                               Server EVALUATION_OUTPUT_ROOT
   --jobs JOB...               Slurm job ids to sync
   --jobs-from-squeue          Read active job ids from remote Slurm squeue
-  --jobs-from-manifest PATH   Read evaluation_job ids from a trajectory TSV manifest
+  --jobs-from-manifest PATH   Read Slurm/output ids from a trajectory TSV manifest
   --jobs-from-registry PATH    Read job ids from a registry, default planning/run_registry.md
   --dry-run                   Print rsync commands without copying
   -h, --help                  Show this help
@@ -156,7 +156,19 @@ if [ -n "$JOBS_MANIFEST" ]; then
         exit 1
     fi
     mapfile -t JOBS < <(
-        awk -F '\t' 'NR > 1 && $1 ~ /^[0-9]+$/ && !seen[$1]++ { print $1 }' "$JOBS_MANIFEST"
+        awk -F '\t' '
+            NR == 1 {
+                for (column = 1; column <= NF; column++) {
+                    if ($column == "output_id") output_column = column
+                }
+                next
+            }
+            {
+                value = output_column ? $output_column : $1
+                sub(/\/.*/, "", value)
+                if (value ~ /^[0-9]+$/ && !seen[value]++) print value
+            }
+        ' "$JOBS_MANIFEST"
     )
     if [ "${#JOBS[@]}" -eq 0 ]; then
         echo "No evaluation job IDs found in manifest: $JOBS_MANIFEST"
@@ -256,6 +268,7 @@ for JOB in "${JOBS[@]}"; do
     REMOTE_BATCH_PROFILE_DIR="$REMOTE_EVALUATION_OUTPUT_ROOT/batch_profile_$JOB"
     REMOTE_CLAIR_BATCH_PROFILE_DIR="$REMOTE_EVALUATION_OUTPUT_ROOT/clair_batch_profile_$JOB"
     REMOTE_CLAIR_DIR="$REMOTE_EVALUATION_OUTPUT_ROOT/clair_$JOB"
+    REMOTE_TRAJECTORY_DIR="$REMOTE_EVALUATION_OUTPUT_ROOT/trajectory_$JOB"
     if remote_dir_exists "$REMOTE_FINETUNING_RUN_DIR"; then
         RUN_KIND="finetuning"
         SYNC_RUN_DIR="$REMOTE_FINETUNING_RUN_DIR"
@@ -271,6 +284,9 @@ for JOB in "${JOBS[@]}"; do
     elif remote_dir_exists "$REMOTE_CLAIR_DIR"; then
         RUN_KIND="evaluation"
         SYNC_RUN_DIR="$REMOTE_CLAIR_DIR"
+    elif remote_dir_exists "$REMOTE_TRAJECTORY_DIR"; then
+        RUN_KIND="evaluation"
+        SYNC_RUN_DIR="$REMOTE_TRAJECTORY_DIR"
     else
         echo "Warning: remote run directory not found for job $JOB:"
         echo "  $REMOTE_FINETUNING_RUN_DIR"
@@ -278,6 +294,7 @@ for JOB in "${JOBS[@]}"; do
         echo "  $REMOTE_BATCH_PROFILE_DIR"
         echo "  $REMOTE_CLAIR_BATCH_PROFILE_DIR"
         echo "  $REMOTE_CLAIR_DIR"
+        echo "  $REMOTE_TRAJECTORY_DIR"
         continue
     fi
 
@@ -321,6 +338,7 @@ for JOB in "${JOBS[@]}"; do
         --include="*.jsonl" \
         --include="*.json" \
         --include="*.csv" \
+        --include="*.tsv" \
         --include="*.log" \
         --include="*.yaml" \
         --include="*.yml" \

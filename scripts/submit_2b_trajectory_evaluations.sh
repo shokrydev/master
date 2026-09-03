@@ -95,7 +95,7 @@ declare -A FIT_IDS=(
     [42:loc_additive_satclip]=11810
     [43:no_loc]=11811
     [43:loc_text]=11812
-    [43:loc_embed]=11813
+    [43:loc_embed]=12027
     [43:loc_additive_satclip]=11814
 )
 
